@@ -7,6 +7,7 @@ from src.domain import Channel
 from src.features.engineering import (
     ALTERNATIVE_DATA_FEATURES,
     BANK_FEATURES,
+    DATA_SOURCE_FEATURES,
     LENDING_HISTORY_FEATURES,
     MOBILE_LENDER_FEATURES,
     MPESA_FEATURES,
@@ -69,13 +70,33 @@ def _alternative_data_good(rng: np.random.Generator, income: float) -> dict[str,
         "sms_salary_detected": 1.0,
         "sms_inferred_monthly_income_kes": sms_income,
         "sms_mpesa_txn_count_30d": rng.uniform(25, 120),
+        "sms_total_count_30d": rng.uniform(40, 180),
         "sms_bill_pay_regularity": rng.uniform(0.7, 1.0),
         "sms_other_lender_repayment_count": rng.integers(0, 2),
+        "sms_collection_message_count_30d": rng.integers(0, 1),
+        "sms_lender_promo_count_30d": rng.integers(0, 2),
         "sms_gambling_ratio": rng.uniform(0.0, 0.08),
+        "income_declared_vs_sms_ratio": sms_income / max(income, 1),
+        "call_total_count_30d": rng.uniform(20, 90),
+        "call_unique_contacts_30d": rng.uniform(12, 45),
+        "call_avg_duration_seconds": rng.uniform(45, 240),
+        "call_incoming_ratio": rng.uniform(0.45, 0.75),
+        "call_missed_ratio": rng.uniform(0.05, 0.2),
+        "call_collection_agency_count_30d": 0.0,
+        "call_night_activity_ratio": rng.uniform(0.02, 0.12),
+        "device_tenure_days": rng.integers(120, 900),
+        "contacts_count": rng.uniform(80, 350),
+        "contacts_saved_ratio": rng.uniform(0.65, 0.95),
         "apps_lending_app_count": rng.integers(0, 2),
         "apps_gambling_app_count": rng.integers(0, 1),
-        "income_declared_vs_sms_ratio": sms_income / max(income, 1),
-        "device_tenure_days": rng.integers(120, 900),
+        "device_os_android": 1.0,
+        "device_os_version_score": rng.uniform(0.6, 1.0),
+        "device_tier": rng.integers(2, 4),
+        "device_ram_gb": rng.uniform(3, 8),
+        "device_storage_free_ratio": rng.uniform(0.25, 0.8),
+        "device_dual_sim": 1.0,
+        "device_network_4g_plus": 1.0,
+        "device_model_age_months": rng.uniform(6, 36),
     }
 
 
@@ -86,13 +107,45 @@ def _alternative_data_risk(rng: np.random.Generator, income: float) -> dict[str,
         "sms_salary_detected": rng.choice([0.0, 1.0]),
         "sms_inferred_monthly_income_kes": sms_income,
         "sms_mpesa_txn_count_30d": rng.uniform(2, 18),
+        "sms_total_count_30d": rng.uniform(5, 35),
         "sms_bill_pay_regularity": rng.uniform(0.05, 0.35),
         "sms_other_lender_repayment_count": rng.integers(3, 10),
+        "sms_collection_message_count_30d": rng.integers(4, 14),
+        "sms_lender_promo_count_30d": rng.integers(5, 18),
         "sms_gambling_ratio": rng.uniform(0.2, 0.55),
+        "income_declared_vs_sms_ratio": sms_income / max(income, 1),
+        "call_total_count_30d": rng.uniform(3, 25),
+        "call_unique_contacts_30d": rng.uniform(2, 12),
+        "call_avg_duration_seconds": rng.uniform(5, 40),
+        "call_incoming_ratio": rng.uniform(0.15, 0.45),
+        "call_missed_ratio": rng.uniform(0.35, 0.75),
+        "call_collection_agency_count_30d": rng.uniform(2, 8),
+        "call_night_activity_ratio": rng.uniform(0.25, 0.55),
+        "device_tenure_days": rng.integers(5, 60),
+        "contacts_count": rng.uniform(8, 45),
+        "contacts_saved_ratio": rng.uniform(0.1, 0.4),
         "apps_lending_app_count": rng.integers(3, 7),
         "apps_gambling_app_count": rng.integers(1, 4),
-        "income_declared_vs_sms_ratio": sms_income / max(income, 1),
-        "device_tenure_days": rng.integers(5, 60),
+        "device_os_android": rng.choice([1.0, 0.0]),
+        "device_os_version_score": rng.uniform(0.1, 0.45),
+        "device_tier": rng.integers(1, 2),
+        "device_ram_gb": rng.uniform(1, 3),
+        "device_storage_free_ratio": rng.uniform(0.02, 0.2),
+        "device_dual_sim": rng.choice([1.0, 0.0]),
+        "device_network_4g_plus": rng.choice([1.0, 0.0]),
+        "device_model_age_months": rng.uniform(48, 96),
+    }
+
+
+def _data_sources_for_channel(channel: str, rng: np.random.Generator, *, good: bool) -> dict[str, float]:
+    has_bank = channel == Channel.BANK.value or (good and channel == Channel.UNBANKED.value and rng.random() < 0.15)
+    has_sacco = channel == Channel.SACCO.value or (good and rng.random() < 0.2)
+    return {
+        "has_mpesa_wallet": 1.0 if channel in {Channel.MPESA.value, Channel.UNBANKED.value} else float(rng.random() < 0.7),
+        "has_phone_consent": 1.0,
+        "has_bank_account": 1.0 if has_bank else 0.0,
+        "has_sacco_membership": 1.0 if has_sacco else 0.0,
+        "has_crb_record": 1.0 if channel == Channel.BANK.value or rng.random() < 0.35 else 0.0,
     }
 
 
@@ -138,8 +191,9 @@ def _good_profile(channel: str, rng: np.random.Generator) -> dict[str, float]:
     }
     base.update(_lending_history_good(rng))
     base.update(_alternative_data_good(rng, income))
+    base.update(_data_sources_for_channel(channel, rng, good=True))
 
-    if channel == Channel.MPESA.value:
+    if channel in {Channel.MPESA.value, Channel.UNBANKED.value}:
         base.update(
             {
                 "kyc_tier": rng.integers(2, 4),
@@ -198,8 +252,9 @@ def _risk_profile(channel: str, rng: np.random.Generator) -> dict[str, float]:
     }
     base.update(_lending_history_risk(rng))
     base.update(_alternative_data_risk(rng, income))
+    base.update(_data_sources_for_channel(channel, rng, good=False))
 
-    if channel == Channel.MPESA.value:
+    if channel in {Channel.MPESA.value, Channel.UNBANKED.value}:
         base.update(
             {
                 "kyc_tier": rng.integers(1, 2),
@@ -250,6 +305,7 @@ def _risk_profile(channel: str, rng: np.random.Generator) -> dict[str, float]:
 def _zero_fill_channel_features(row: dict[str, float], channel: str) -> dict[str, float]:
     all_features = (
         LENDING_HISTORY_FEATURES
+        + DATA_SOURCE_FEATURES
         + ALTERNATIVE_DATA_FEATURES
         + MPESA_FEATURES
         + SACCO_FEATURES
@@ -259,7 +315,7 @@ def _zero_fill_channel_features(row: dict[str, float], channel: str) -> dict[str
     for feature in all_features:
         row.setdefault(feature, 0.0)
 
-    if channel != Channel.MPESA.value:
+    if channel not in {Channel.MPESA.value, Channel.UNBANKED.value}:
         for feature in MPESA_FEATURES:
             row[feature] = 0.0
     if channel != Channel.SACCO.value:
@@ -289,6 +345,7 @@ def generate_synthetic_portfolio(
 
     all_features = (
         LENDING_HISTORY_FEATURES
+        + DATA_SOURCE_FEATURES
         + ALTERNATIVE_DATA_FEATURES
         + MPESA_FEATURES
         + SACCO_FEATURES

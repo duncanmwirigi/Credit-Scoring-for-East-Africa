@@ -20,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger("credit_scoring.score")
 
 
-def _alt_data(income: float, *, good: bool) -> dict[str, float]:
+def _phone_data(income: float, *, good: bool) -> dict[str, float]:
     if good:
         sms_income = income * 0.98
         return {
@@ -28,26 +28,86 @@ def _alt_data(income: float, *, good: bool) -> dict[str, float]:
             "sms_salary_detected": 1.0,
             "sms_inferred_monthly_income_kes": sms_income,
             "sms_mpesa_txn_count_30d": 72,
+            "sms_total_count_30d": 118,
             "sms_bill_pay_regularity": 0.91,
             "sms_other_lender_repayment_count": 1,
+            "sms_collection_message_count_30d": 0,
+            "sms_lender_promo_count_30d": 1,
             "sms_gambling_ratio": 0.04,
+            "income_declared_vs_sms_ratio": sms_income / income,
+            "call_total_count_30d": 64,
+            "call_unique_contacts_30d": 28,
+            "call_avg_duration_seconds": 145,
+            "call_incoming_ratio": 0.62,
+            "call_missed_ratio": 0.11,
+            "call_collection_agency_count_30d": 0,
+            "call_night_activity_ratio": 0.06,
+            "device_tenure_days": 540,
+            "contacts_count": 210,
+            "contacts_saved_ratio": 0.88,
             "apps_lending_app_count": 1,
             "apps_gambling_app_count": 0,
-            "income_declared_vs_sms_ratio": sms_income / income,
-            "device_tenure_days": 540,
+            "device_os_android": 1.0,
+            "device_os_version_score": 0.87,
+            "device_tier": 2,
+            "device_ram_gb": 4,
+            "device_storage_free_ratio": 0.42,
+            "device_dual_sim": 1.0,
+            "device_network_4g_plus": 1.0,
+            "device_model_age_months": 18,
         }
     return {
         "alternative_data_consent": 1.0,
         "sms_salary_detected": 0.0,
         "sms_inferred_monthly_income_kes": income * 0.55,
         "sms_mpesa_txn_count_30d": 9,
+        "sms_total_count_30d": 22,
         "sms_bill_pay_regularity": 0.18,
         "sms_other_lender_repayment_count": 6,
+        "sms_collection_message_count_30d": 9,
+        "sms_lender_promo_count_30d": 11,
         "sms_gambling_ratio": 0.38,
+        "income_declared_vs_sms_ratio": 0.55,
+        "call_total_count_30d": 14,
+        "call_unique_contacts_30d": 6,
+        "call_avg_duration_seconds": 18,
+        "call_incoming_ratio": 0.28,
+        "call_missed_ratio": 0.58,
+        "call_collection_agency_count_30d": 5,
+        "call_night_activity_ratio": 0.41,
+        "device_tenure_days": 40,
+        "contacts_count": 24,
+        "contacts_saved_ratio": 0.22,
         "apps_lending_app_count": 5,
         "apps_gambling_app_count": 2,
-        "income_declared_vs_sms_ratio": 0.55,
-        "device_tenure_days": 40,
+        "device_os_android": 1.0,
+        "device_os_version_score": 0.28,
+        "device_tier": 1,
+        "device_ram_gb": 2,
+        "device_storage_free_ratio": 0.08,
+        "device_dual_sim": 0.0,
+        "device_network_4g_plus": 0.0,
+        "device_model_age_months": 72,
+    }
+
+
+_alt_data = _phone_data
+
+
+def _data_sources(
+    *,
+    mpesa: bool = True,
+    phone: bool = True,
+    bank: bool = False,
+    sacco: bool = False,
+    crb: bool = False,
+) -> dict[str, float]:
+    return {
+        "has_mpesa_wallet": 1.0 if mpesa else 0.0,
+        "has_phone_consent": 1.0 if phone else 0.0,
+        "has_bank_account": 1.0 if bank else 0.0,
+        "has_sacco_membership": 1.0 if sacco else 0.0,
+        "has_crb_record": 1.0 if crb else 0.0,
     }
 
 
@@ -84,6 +144,30 @@ def _history(*, good: bool, prior_limit: float = 0) -> dict[str, float]:
 def sample_applicants() -> list[ApplicantProfile]:
     return [
         ApplicantProfile(
+            applicant_id="UNBANKED-001",
+            channel=Channel.UNBANKED,
+            age=29,
+            monthly_income_kes=28_000,
+            requested_amount_kes=12_000,
+            existing_debt_kes=2_000,
+            crb_defaults=0,
+            crb_inquiries_6m=0,
+            features={
+                **_history(good=True, prior_limit=8_000),
+                **_data_sources(mpesa=True, phone=True, bank=False, sacco=False, crb=False),
+                **_phone_data(28_000, good=True),
+                "kyc_tier": 2,
+                "wallet_activity_days_90d": 72,
+                "avg_monthly_txn_count": 58,
+                "avg_txn_amount_kes": 1_800,
+                "cash_in_out_ratio": 1.05,
+                "merchant_spend_ratio": 0.28,
+                "fuliza_utilization": 0.12,
+                "wallet_balance_volatility": 0.22,
+                "days_since_last_txn": 1,
+            },
+        ),
+        ApplicantProfile(
             applicant_id="MPESA-001",
             channel=Channel.MPESA,
             age=34,
@@ -94,7 +178,8 @@ def sample_applicants() -> list[ApplicantProfile]:
             crb_inquiries_6m=0,
             features={
                 **_history(good=True, prior_limit=40_000),
-                **_alt_data(85_000, good=True),
+                **_data_sources(mpesa=True, phone=True, bank=False, sacco=False, crb=False),
+                **_phone_data(85_000, good=True),
                 "kyc_tier": 3,
                 "wallet_activity_days_90d": 88,
                 "avg_monthly_txn_count": 95,
@@ -151,7 +236,7 @@ def sample_applicants() -> list[ApplicantProfile]:
             },
         ),
         ApplicantProfile(
-            applicant_id="TALA-001",
+            applicant_id="MOBLEND-001",
             channel=Channel.MOBILE_LENDER,
             age=31,
             monthly_income_kes=48_000,
@@ -174,7 +259,7 @@ def sample_applicants() -> list[ApplicantProfile]:
             },
         ),
         ApplicantProfile(
-            applicant_id="TALA-RISK-99",
+            applicant_id="MOBLEND-RISK-99",
             channel=Channel.MOBILE_LENDER,
             age=23,
             monthly_income_kes=14_000,

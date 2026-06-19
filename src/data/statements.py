@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Derive credit features from customer-provided financial statements.
 
-Third-party lenders (Tala, Branch, Zenka, etc.) do not share internal APIs.
+Third-party digital lenders do not share internal APIs.
 This module parses uploaded M-Pesa, bank, and SACCO statements into model features.
 """
 
@@ -12,10 +12,11 @@ from typing import Iterable
 
 # Known digital-lender paybill / till keywords seen on M-Pesa statements (illustrative).
 _DIGITAL_LENDER_KEYWORDS = (
-    "tala",
-    "branch",
-    "zenka",
-    "okash",
+    "loan disbursed",
+    "loan repayment",
+    "digital loan",
+    "instant loan",
+    "paybill loan",
     "mshwari loan",
     "fuliza",
     "timiza",

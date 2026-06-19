@@ -6,6 +6,7 @@ from typing import Any
 
 
 class Channel(str, Enum):
+    UNBANKED = "unbanked"
     MPESA = "mpesa"
     SACCO = "sacco"
     BANK = "bank"

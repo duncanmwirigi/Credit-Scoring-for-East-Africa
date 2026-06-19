@@ -69,18 +69,73 @@ class LendingHistoryFeatures(BaseModel):
     months_customer_relationship: float = Field(ge=0, default=0)
 
 
-class AlternativeDataFeatures(BaseModel):
-    alternative_data_consent: float = Field(ge=0, le=1, default=0)
+class PhoneSmsData(BaseModel):
     sms_salary_detected: float = Field(ge=0, le=1, default=0)
     sms_inferred_monthly_income_kes: float = Field(ge=0, default=0)
     sms_mpesa_txn_count_30d: float = Field(ge=0, default=0)
+    sms_total_count_30d: float = Field(ge=0, default=0)
     sms_bill_pay_regularity: float = Field(ge=0, le=1, default=0)
     sms_other_lender_repayment_count: float = Field(ge=0, default=0)
+    sms_collection_message_count_30d: float = Field(ge=0, default=0)
+    sms_lender_promo_count_30d: float = Field(ge=0, default=0)
     sms_gambling_ratio: float = Field(ge=0, le=1, default=0)
+    income_declared_vs_sms_ratio: float = Field(ge=0, default=1.0)
+
+
+class PhoneCallData(BaseModel):
+    call_total_count_30d: float = Field(ge=0, default=0)
+    call_unique_contacts_30d: float = Field(ge=0, default=0)
+    call_avg_duration_seconds: float = Field(ge=0, default=0)
+    call_incoming_ratio: float = Field(ge=0, le=1, default=0.5)
+    call_missed_ratio: float = Field(ge=0, le=1, default=0)
+    call_collection_agency_count_30d: float = Field(ge=0, default=0)
+    call_night_activity_ratio: float = Field(ge=0, le=1, default=0)
+
+
+class PhoneDeviceData(BaseModel):
+    device_tenure_days: float = Field(ge=0, default=0)
+    contacts_count: float = Field(ge=0, default=0)
+    contacts_saved_ratio: float = Field(ge=0, le=1, default=0)
     apps_lending_app_count: float = Field(ge=0, default=0)
     apps_gambling_app_count: float = Field(ge=0, default=0)
-    income_declared_vs_sms_ratio: float = Field(ge=0, default=1.0)
-    device_tenure_days: float = Field(ge=0, default=0)
+    device_os_android: float = Field(ge=0, le=1, default=1)
+    device_os_version_score: float = Field(ge=0, le=1, default=0.5)
+    device_tier: float = Field(ge=1, le=3, default=2)
+    device_ram_gb: float = Field(ge=0, default=2)
+    device_storage_free_ratio: float = Field(ge=0, le=1, default=0.5)
+    device_dual_sim: float = Field(ge=0, le=1, default=1)
+    device_network_4g_plus: float = Field(ge=0, le=1, default=1)
+    device_model_age_months: float = Field(ge=0, default=24)
+
+
+class DataSourcesFeatures(BaseModel):
+    """Flags for which scoring data sources are available for this applicant."""
+
+    has_mpesa_wallet: float = Field(ge=0, le=1, default=0)
+    has_phone_consent: float = Field(ge=0, le=1, default=0)
+    has_bank_account: float = Field(ge=0, le=1, default=0)
+    has_sacco_membership: float = Field(ge=0, le=1, default=0)
+    has_crb_record: float = Field(ge=0, le=1, default=0)
+
+
+class PhoneDataFeatures(BaseModel):
+    """On-device phone permissions: SMS inbox, call log, contacts, installed apps."""
+
+    alternative_data_consent: float = Field(ge=0, le=1, default=0)
+    sms: PhoneSmsData = Field(default_factory=PhoneSmsData)
+    calls: PhoneCallData = Field(default_factory=PhoneCallData)
+    device: PhoneDeviceData = Field(default_factory=PhoneDeviceData)
+
+    def flatten(self) -> dict[str, float]:
+        payload = {"alternative_data_consent": self.alternative_data_consent}
+        payload.update(self.sms.model_dump())
+        payload.update(self.calls.model_dump())
+        payload.update(self.device.model_dump())
+        return payload
+
+
+# Backward-compatible alias for API clients using the old block name.
+AlternativeDataFeatures = PhoneDataFeatures
 
 
 class ScoreRequest(BaseModel):
@@ -93,7 +148,12 @@ class ScoreRequest(BaseModel):
     crb_defaults: int = Field(ge=0)
     crb_inquiries_6m: int = Field(ge=0)
     lending_history: LendingHistoryFeatures = Field(default_factory=LendingHistoryFeatures)
-    alternative_data: AlternativeDataFeatures = Field(default_factory=AlternativeDataFeatures)
+    data_sources: DataSourcesFeatures = Field(default_factory=DataSourcesFeatures)
+    phone_data: PhoneDataFeatures = Field(default_factory=PhoneDataFeatures)
+    alternative_data: PhoneDataFeatures | None = Field(
+        default=None,
+        description="Deprecated alias for phone_data.",
+    )
     mpesa_features: MpesaFeatures | None = None
     sacco_features: SaccoFeatures | None = None
     bank_features: BankFeatures | None = None
@@ -103,8 +163,8 @@ class ScoreRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_channel_features(self) -> "ScoreRequest":
-        if self.channel == Channel.MPESA and self.mpesa_features is None:
-            raise ValueError("mpesa_features are required when channel is mpesa.")
+        if self.channel in {Channel.UNBANKED, Channel.MPESA} and self.mpesa_features is None:
+            raise ValueError("mpesa_features are required for unbanked/mpesa channels.")
         if self.channel == Channel.SACCO and self.sacco_features is None:
             raise ValueError("sacco_features are required when channel is sacco.")
         if self.channel == Channel.BANK and self.bank_features is None:
@@ -118,7 +178,14 @@ class ScoreRequest(BaseModel):
     def to_applicant(self) -> ApplicantProfile:
         features: dict[str, float] = {}
         features.update(self.lending_history.model_dump())
-        features.update(self.alternative_data.model_dump())
+        features.update(self.data_sources.model_dump())
+        phone_payload = self.alternative_data if self.alternative_data is not None else self.phone_data
+        features.update(phone_payload.flatten())
+        if features.get("has_phone_consent", 0) >= 0.5:
+            features["alternative_data_consent"] = max(
+                features.get("alternative_data_consent", 0),
+                features["has_phone_consent"],
+            )
         if self.mpesa_features:
             features.update(self.mpesa_features.model_dump())
         if self.sacco_features:

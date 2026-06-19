@@ -82,7 +82,7 @@ class CreditScorer:
             explanations.append(("debt_to_income", 0.25))
         if feature_row["loan_to_income"] > 3:
             explanations.append(("loan_to_income", 0.20))
-        if channel == Channel.MPESA and feature_row.get("fuliza_utilization", 0) > 0.7:
+        if channel in {Channel.MPESA, Channel.UNBANKED} and feature_row.get("fuliza_utilization", 0) > 0.7:
             explanations.append(("fuliza_utilization", 0.18))
         if channel == Channel.SACCO and feature_row.get("prior_loan_repayment_rate", 1.0) < 0.8:
             explanations.append(("prior_loan_repayment_rate", 0.18))
@@ -97,6 +97,10 @@ class CreditScorer:
                 explanations.append(("apps_lending_app_count", 0.18))
             if feature_row.get("sms_gambling_ratio", 0) > 0.25:
                 explanations.append(("sms_gambling_ratio", 0.16))
+            if feature_row.get("call_collection_agency_count_30d", 0) > 0:
+                explanations.append(("call_collection_agency_count_30d", 0.20))
+            if feature_row.get("sms_collection_message_count_30d", 0) > 2:
+                explanations.append(("sms_collection_message_count_30d", 0.17))
         if channel == Channel.MOBILE_LENDER:
             if feature_row.get("mpesa_active_lender_count", 0) > 2:
                 explanations.append(("mpesa_active_lender_count", 0.22))

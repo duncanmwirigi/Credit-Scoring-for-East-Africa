@@ -29,7 +29,11 @@ class PolicyEngine:
                 f"({policy.max_debt_to_income:.0%})."
             )
 
-        if applicant.crb_defaults > policy.max_crb_defaults:
+        features = applicant.features
+
+        if applicant.crb_defaults > policy.max_crb_defaults and features.get(
+            "has_crb_record", 0
+        ) >= 0.5:
             reasons.append("Active CRB default listing detected.")
 
         reasons.extend(self._channel_rules(applicant))
@@ -40,46 +44,55 @@ class PolicyEngine:
         rules = self.config.channel_minimums.get(applicant.channel.value, {})
         reasons: list[str] = []
 
-        if applicant.channel == Channel.MPESA:
-            if features.get("kyc_tier", 0) < rules.get("min_kyc_tier", 2):
+        if applicant.channel in {Channel.MPESA, Channel.UNBANKED}:
+            if features.get("has_mpesa_wallet", 0) < 0.5 and applicant.channel == Channel.UNBANKED:
+                reasons.append("M-Pesa wallet data required for unbanked scoring.")
+            wallet_rules = self.config.channel_minimums.get(
+                applicant.channel.value,
+                self.config.channel_minimums.get("mpesa", {}),
+            )
+            if features.get("kyc_tier", 0) < wallet_rules.get("min_kyc_tier", 2):
                 reasons.append("M-Pesa KYC tier too low for lending.")
-            if features.get("fuliza_utilization", 0) > rules.get("max_fuliza_utilization", 1):
+            if features.get("fuliza_utilization", 0) > wallet_rules.get("max_fuliza_utilization", 1):
                 reasons.append("Fuliza/overdraft utilization exceeds channel limit.")
-            if features.get("wallet_activity_days_90d", 0) < rules.get(
+            if features.get("wallet_activity_days_90d", 0) < wallet_rules.get(
                 "min_wallet_activity_days_90d", 0
             ):
                 reasons.append("Insufficient M-Pesa wallet activity in last 90 days.")
 
-        elif applicant.channel == Channel.SACCO:
-            if features.get("membership_months", 0) < rules.get("min_membership_months", 0):
+        if applicant.channel == Channel.SACCO or features.get("has_sacco_membership", 0) >= 0.5:
+            sacco_rules = self.config.channel_minimums.get("sacco", {})
+            if features.get("membership_months", 0) < sacco_rules.get("min_membership_months", 0):
                 reasons.append("SACCO membership tenure below minimum.")
-            if features.get("share_capital_kes", 0) < rules.get("min_share_capital_kes", 0):
+            if features.get("share_capital_kes", 0) < sacco_rules.get("min_share_capital_kes", 0):
                 reasons.append("Share capital below SACCO minimum.")
-            if features.get("prior_loan_repayment_rate", 1) < rules.get("min_repayment_rate", 0):
+            if features.get("prior_loan_repayment_rate", 1) < sacco_rules.get("min_repayment_rate", 0):
                 reasons.append("Historical SACCO loan repayment rate too low.")
 
-        elif applicant.channel == Channel.BANK:
-            if features.get("account_age_months", 0) < rules.get("min_account_age_months", 0):
+        if applicant.channel == Channel.BANK or features.get("has_bank_account", 0) >= 0.5:
+            bank_rules = self.config.channel_minimums.get("bank", {})
+            if features.get("account_age_months", 0) < bank_rules.get("min_account_age_months", 0):
                 reasons.append("Bank account age below minimum.")
-            if features.get("bounced_cheques_12m", 0) > rules.get("max_bounced_cheques_12m", 0):
+            if features.get("bounced_cheques_12m", 0) > bank_rules.get("max_bounced_cheques_12m", 0):
                 reasons.append("Too many bounced cheques in the last 12 months.")
-            if features.get("avg_monthly_balance_kes", 0) < rules.get("min_avg_balance_kes", 0):
+            if features.get("avg_monthly_balance_kes", 0) < bank_rules.get("min_avg_balance_kes", 0):
                 reasons.append("Average monthly balance below bank threshold.")
 
-        elif applicant.channel == Channel.MOBILE_LENDER:
-            if features.get("mpesa_statement_days_covered", 0) < rules.get(
+        if applicant.channel == Channel.MOBILE_LENDER:
+            lender_rules = self.config.channel_minimums.get("mobile_lender", {})
+            if features.get("mpesa_statement_days_covered", 0) < lender_rules.get(
                 "min_mpesa_statement_days_covered", 0
             ):
                 reasons.append("Insufficient M-Pesa statement history provided.")
-            if features.get("mpesa_inferred_repayment_rate", 1) < rules.get(
+            if features.get("mpesa_inferred_repayment_rate", 1) < lender_rules.get(
                 "min_mpesa_inferred_repayment_rate", 0
             ):
                 reasons.append("M-Pesa statement shows weak cross-lender repayment behaviour.")
-            if features.get("mpesa_active_lender_count", 0) > rules.get(
+            if features.get("mpesa_active_lender_count", 0) > lender_rules.get(
                 "max_mpesa_active_lender_count", 99
             ):
                 reasons.append("Too many active digital lenders on M-Pesa statement (stacking).")
-            if features.get("mpesa_late_repayment_events_12m", 0) > rules.get(
+            if features.get("mpesa_late_repayment_events_12m", 0) > lender_rules.get(
                 "max_mpesa_late_repayment_events_12m", 99
             ):
                 reasons.append("Late repayment events detected on M-Pesa statement.")

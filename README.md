@@ -1,17 +1,17 @@
 # East Africa Credit Scoring Engine
 
-A production-style **credit scoring platform** for **M-Pesa**, **SACCO**, **bank**, and **mobile digital lender** channels in East Africa — covering telco-led lending, co-operatives, traditional banks, and app-based lenders such as **Tala**, **Branch**, **Zenka**, and **Okash**.
+An **unbanked-first** credit scoring platform for East Africa. Most applicants have no traditional bank account — scoring relies on **M-Pesa**, **phone data** (SMS, call log, device tech), and **statements**, with **bank**, **SACCO**, and **CRB** data used when available.
 
-It combines channel-specific feature engineering, a calibrated ML model, scorecard conversion (300–850), deterministic policy rules, **SHAP explainability**, and a **FastAPI REST service** with regulatory audit trails.
+It combines channel-specific feature engineering, a calibrated ML model, scorecard conversion (300–850), deterministic policy rules, **SHAP explainability**, loan limit assignment, and a **FastAPI REST service** with regulatory audit trails.
 
 ## Platform at a glance
 
 | Capability | Status | Entry point |
 |------------|--------|-------------|
-| Multi-channel scoring (M-Pesa / SACCO / bank / mobile lender) | ✅ | `score.py`, `/score` |
+| Multi-channel scoring (unbanked / M-Pesa / SACCO / bank / mobile lender) | ✅ | `score.py`, `/score` |
 | Loan limit assignment (increase / decrease / maintain) | ✅ | `src/lending/limit_engine.py` |
 | Borrowing & repayment history (all channels) | ✅ | `lending_history` in API |
-| Phone alternative data (SMS, apps, income) | ✅ | `alternative_data` in API |
+| Phone data (SMS, call log, contacts, apps) | ✅ | `phone_data` in API, `src/data/phone_data.py` |
 | ML training + evaluation (AUC, Gini, KS) | ✅ | `train.py` |
 | Calibrated probability of default (PD) | ✅ | `src/ml/trainer.py` |
 | Scorecard mapping (PDO methodology) | ✅ | `src/ml/scorer.py` |
@@ -26,27 +26,41 @@ It combines channel-specific feature engineering, a calibrated ML model, scoreca
 
 | Channel | `channel` value | API feature block | Examples |
 |---------|-----------------|-------------------|----------|
-| M-Pesa mobile money | `mpesa` | `mpesa_features` | Safaricom lending, Fuliza |
-| Mobile digital lender | `mobile_lender` | `mobile_lender_features` | Tala, Branch, Zenka, Okash |
+| Unbanked (primary) | `unbanked` | `mpesa_features` + `phone_data` | No bank account; M-Pesa + phone only |
+| M-Pesa mobile money | `mpesa` | `mpesa_features` | Telco-led lending, Fuliza |
+| Mobile digital lender | `mobile_lender` | `mobile_lender_features` | App-based short-term lenders |
 | SACCO | `sacco` | `sacco_features` | Stima, Harambee, Sheria SACCO |
 | Bank | `bank` | `bank_features` | KCB, Equity, Co-op Bank |
 
 ## Data sources — statements, not third-party APIs
 
-Competing lenders (Tala, Branch, Zenka, Okash, etc.) **do not share internal platform data**. This platform is designed around what you can actually obtain:
+Other digital lenders **do not share internal platform data**. This platform is designed around what you can actually obtain:
 
-| Source | What you get | Used for |
-|--------|--------------|----------|
-| **Your own loan ledger** | Repayment history, prior limits, defaults | `lending_history` — **scoring institution only** |
-| **M-Pesa statement / SMS** | Salary, repayments to other lenders, gambling, bill pay | `alternative_data` + mobile-lender channel features |
-| **Bank statement** | Balances, salary deposits, bounced cheques | `bank_features` |
-| **SACCO statement** | Share capital, savings, membership, guarantors | `sacco_features` |
-| **M-Pesa wallet data** | KYC tier, Fuliza, transaction patterns | `mpesa_features` |
-| **CRB** (when available) | Defaults, inquiries | `crb_defaults`, `crb_inquiries_6m` |
+| Source | Required for unbanked? | Used for |
+|--------|------------------------|----------|
+| **M-Pesa wallet** | Yes (primary rail) | `mpesa_features`, `has_mpesa_wallet` |
+| **Phone (SMS, calls, device tech)** | Strongly recommended | `phone_data` → `sms` / `calls` / `device` |
+| **Your loan ledger** | If repeat customer | `lending_history` |
+| **M-Pesa statement** | Optional (cross-lender signals) | `mobile_lender_features` / statement parser |
+| **Bank statement** | Optional | `bank_features` when `has_bank_account: 1` |
+| **SACCO statement** | Optional | `sacco_features` when `has_sacco_membership: 1` |
+| **CRB** | Optional | `crb_*` when `has_crb_record: 1` |
 
-Cross-lender behaviour (loan stacking, late repayments to Tala/Branch, etc.) is **inferred from the customer's M-Pesa statement**, not from competitor APIs. Use `src/data/statements.py` to parse statement exports into features before calling `/score`.
+Set availability explicitly via the `data_sources` block:
 
-The model uses **64 features** total: 8 common + 11 lending history + 11 alternative data + 34 channel-specific (only the block matching the applicant's channel is populated; others are zeroed). Alternative data features are zeroed when `alternative_data_consent < 0.5`.
+```json
+"data_sources": {
+  "has_mpesa_wallet": 1.0,
+  "has_phone_consent": 1.0,
+  "has_bank_account": 0.0,
+  "has_sacco_membership": 0.0,
+  "has_crb_record": 0.0
+}
+```
+
+Bank and SACCO features are **included in the score only when their flag is set** — unbanked applicants are not penalised for missing bank data.
+
+The model uses **89 features** total: 8 common + 11 lending history + 5 data-source flags + 31 phone data + 34 channel-specific. Phone features are zeroed when consent is not granted.
 
 ## Architecture
 
@@ -177,7 +191,7 @@ One unified model serves all four channels. Channel-specific features are zeroed
 | `overdraft_usage_ratio` | Overdraft utilization (0–1) |
 | `credit_card_utilization` | Credit card utilization (0–1) |
 | `existing_loan_count` | Number of existing loans |
-| `branch_relationship_score` | Branch relationship strength (0–1) |
+| `branch_relationship_score` | Bank branch relationship strength (0–1) |
 
 **Policy checks:** minimum account age (≥ 6 months), max bounced cheques (≤ 1 in 12m), minimum balance (≥ KES 10,000).
 
@@ -187,7 +201,7 @@ One unified model serves all four channels. Channel-specific features are zeroed
 | `max_bounced_cheques_12m` | 1 |
 | `min_avg_balance_kes` | 10,000 |
 
-### Mobile digital lender (Tala, Branch, Zenka, Okash, etc.)
+### Mobile digital lender
 
 Mobile lenders score applicants using **M-Pesa statements plus their own ledger** — not data from other fintech platforms. Competitor activity (disbursements, repayments, stacking) is inferred from M-Pesa paybill/till lines and SMS.
 
@@ -213,7 +227,7 @@ Mobile lenders score applicants using **M-Pesa statements plus their own ledger*
 | `max_mpesa_late_repayment_events_12m` | 3 |
 
 **Typical use cases:**
-- First-time vs repeat borrower limits on Tala or Branch
+- First-time vs repeat borrower limits on your platform
 - Detecting **loan stacking** across multiple digital lenders
 - Pricing repeat borrowers with strong platform repayment history
 - Declining applicants with excessive rollovers or CRB defaults
@@ -253,29 +267,71 @@ Cross-institution borrowing behaviour is inferred separately from **M-Pesa state
 
 These features feed both the **ML model** (default risk) and the **loan limit engine** (increase/decrease logic).
 
-### Alternative data (phone signals, all channels)
+### Phone data (SMS, call log, device — all channels)
 
-Granular phone-derived signals when the applicant grants consent (`alternative_data_consent ≥ 0.5`). Without consent, these features are zeroed and excluded from limit bonuses.
+Collected **on the applicant's phone** with explicit consent. No competitor APIs — the app reads SMS inbox, call history, contacts, and installed apps locally, then sends derived features to `/score`.
 
-| Feature | Description |
-|---------|-------------|
-| `alternative_data_consent` | Explicit consent for SMS/app/device analysis (0/1) |
-| `sms_salary_detected` | Salary-like M-Pesa SMS pattern detected (0/1) |
-| `sms_inferred_monthly_income_kes` | Income inferred from SMS (KES) |
-| `sms_mpesa_txn_count_30d` | M-Pesa transaction SMS count (30 days) |
-| `sms_bill_pay_regularity` | Utility/bill payment regularity from SMS (0–1) |
-| `sms_other_lender_repayment_count` | Repayment SMS from other lenders (30 days) |
-| `sms_gambling_ratio` | Share of SMS related to gambling (0–1) |
-| `apps_lending_app_count` | Installed digital lending apps |
-| `apps_gambling_app_count` | Installed gambling apps |
-| `income_declared_vs_sms_ratio` | Declared income / SMS-inferred income |
-| `device_tenure_days` | Days since device first seen |
+**API structure** (`phone_data` block):
 
-**Typical use cases:**
-- Income verification when CRB or payslip is unavailable
-- Detecting **loan stacking** via multiple lending apps
-- Flagging gambling-heavy behaviour that correlates with default
-- Supporting thin-file applicants at SACCOs and mobile lenders
+```json
+"phone_data": {
+  "alternative_data_consent": 1.0,
+  "sms": {
+    "sms_salary_detected": 1.0,
+    "sms_inferred_monthly_income_kes": 83300,
+    "sms_mpesa_txn_count_30d": 72,
+    "sms_total_count_30d": 118,
+    "sms_bill_pay_regularity": 0.91,
+    "sms_other_lender_repayment_count": 1,
+    "sms_collection_message_count_30d": 0,
+    "sms_lender_promo_count_30d": 1,
+    "sms_gambling_ratio": 0.04,
+    "income_declared_vs_sms_ratio": 0.98
+  },
+  "calls": {
+    "call_total_count_30d": 64,
+    "call_unique_contacts_30d": 28,
+    "call_avg_duration_seconds": 145,
+    "call_incoming_ratio": 0.62,
+    "call_missed_ratio": 0.11,
+    "call_collection_agency_count_30d": 0,
+    "call_night_activity_ratio": 0.06
+  },
+  "device": {
+    "device_tenure_days": 540,
+    "contacts_count": 210,
+    "contacts_saved_ratio": 0.88,
+    "apps_lending_app_count": 1,
+    "apps_gambling_app_count": 0,
+    "device_os_android": 1.0,
+    "device_os_version_score": 0.87,
+    "device_tier": 2,
+    "device_ram_gb": 4,
+    "device_storage_free_ratio": 0.42,
+    "device_dual_sim": 1.0,
+    "device_network_4g_plus": 1.0,
+    "device_model_age_months": 18
+  }
+}
+```
+
+| Group | Feature | Description |
+|-------|---------|-------------|
+| **SMS** | `sms_salary_detected` | Salary M-Pesa SMS pattern (0/1) |
+| **SMS** | `sms_collection_message_count_30d` | Debt-collection SMS count |
+| **SMS** | `sms_lender_promo_count_30d` | Loan marketing SMS (stacking signal) |
+| **SMS** | `sms_gambling_ratio` | Gambling-related SMS share |
+| **Calls** | `call_collection_agency_count_30d` | Calls from collectors / lenders |
+| **Calls** | `call_missed_ratio` | Missed call ratio (stress proxy) |
+| **Calls** | `call_night_activity_ratio` | Calls between 10pm–6am |
+| **Device** | `contacts_count` | Phone book size |
+| **Device** | `apps_lending_app_count` | Installed digital lending apps |
+| **Device tech** | `device_os_android`, `device_os_version_score` | OS type and recency |
+| **Device tech** | `device_tier`, `device_ram_gb` | Handset class (1=budget, 3=premium) and RAM |
+| **Device tech** | `device_network_4g_plus`, `device_dual_sim` | Connectivity profile |
+| **Device tech** | `device_model_age_months`, `device_storage_free_ratio` | Handset age and storage headroom |
+
+Parse raw phone data with `src/data/phone_data.py` (`derive_phone_data_features()`). The legacy `alternative_data` API block still works as an alias.
 
 ## Loan limit engine
 
@@ -323,7 +379,8 @@ credit_scoring/
 │   ├── domain.py                 # Applicant, Decision, Policy models
 │   ├── data/
 │   │   ├── synthetic.py          # Synthetic portfolio generator
-│   │   └── statements.py         # M-Pesa statement → feature parser
+│   │   ├── statements.py         # M-Pesa statement → feature parser
+│   │   └── phone_data.py         # SMS + call log → feature parser
 │   ├── features/
 │   │   └── engineering.py        # Feature matrix builder + channel masking
 │   ├── ml/
@@ -419,8 +476,8 @@ python3 train.py
 | Precision | 0.573 |
 | Recall | 0.734 |
 | Default rate | 12% |
-| Feature count | 64 |
-| Model version | 2.1.0 |
+| Feature count | 89 |
+| Model version | 2.3.0 |
 | Train / test split | 6,400 / 1,600 |
 
 **Generated artifacts:**
@@ -438,7 +495,7 @@ python3 train.py
 
 ## 2. CLI scoring (`score.py`)
 
-Scores six sample applicants across all channels — including **Tala-style mobile lender** cases — plus high-risk M-Pesa and mobile lender scenarios. Each score includes SHAP explainability and a persisted audit trail.
+Scores six sample applicants across all channels — including **mobile digital lender** cases — plus high-risk M-Pesa and mobile lender scenarios. Each score includes SHAP explainability and a persisted audit trail.
 
 ```bash
 python3 score.py
@@ -450,8 +507,8 @@ python3 score.py
 MPESA-001      | channel=mpesa         | score=687 | limit=KES 34,000 | DECREASE  | decision=APPROVE
 SACCO-014      | channel=sacco         | score=687 | limit=KES 48,000 | DECREASE  | decision=APPROVE
 BANK-203       | channel=bank          | score=687 | limit=KES 84,000 | DECREASE  | decision=APPROVE
-TALA-001       | channel=mobile_lender | score=687 | limit=KES 19,000 | MAINTAIN  | decision=APPROVE
-TALA-RISK-99   | channel=mobile_lender | score=561 | limit=KES 0      | SUSPENDED | decision=DECLINE
+MOBLEND-001    | channel=mobile_lender | score=687 | limit=KES 19,000 | MAINTAIN  | decision=APPROVE
+MOBLEND-RISK-99 | channel=mobile_lender | score=561 | limit=KES 0      | SUSPENDED | decision=DECLINE
 MPESA-RISK-77  | channel=mpesa         | score=548 | limit=KES 0      | SUSPENDED | decision=DECLINE
 ```
 
@@ -464,8 +521,8 @@ Re-run `python3 train.py` then `python3 score.py` after config or feature change
 | `MPESA-001` | `mpesa` | Strong M-Pesa wallet profile → APPROVE |
 | `SACCO-014` | `sacco` | Long-tenure SACCO member → APPROVE |
 | `BANK-203` | `bank` | Solid bank relationship + strong history → APPROVE |
-| `TALA-001` | `mobile_lender` | Repeat Tala/Branch-style borrower → APPROVE |
-| `TALA-RISK-99` | `mobile_lender` | Loan stacking + CRB default → DECLINE |
+| `MOBLEND-001` | `mobile_lender` | Repeat digital-lender borrower → APPROVE |
+| `MOBLEND-RISK-99` | `mobile_lender` | Loan stacking + CRB default → DECLINE |
 | `MPESA-RISK-77` | `mpesa` | High Fuliza use + CRB default → DECLINE |
 
 **Generated artifacts:**
@@ -631,13 +688,13 @@ curl -X POST http://127.0.0.1:8000/score \
 }
 ```
 
-**Mobile digital lender example** (Tala / Branch) — use `"channel": "mobile_lender"` and provide `mobile_lender_features`:
+**Mobile digital lender example** — use `"channel": "mobile_lender"` and provide `mobile_lender_features`:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/score \
   -H "Content-Type: application/json" \
   -d '{
-    "applicant_id": "TALA-001",
+    "applicant_id": "MOBLEND-001",
     "channel": "mobile_lender",
     "age": 31,
     "monthly_income_kes": 48000,
@@ -697,7 +754,7 @@ curl -X POST http://127.0.0.1:8000/score \
 
 ```json
 {
-  "applicant_id": "TALA-001",
+  "applicant_id": "MOBLEND-001",
   "channel": "mobile_lender",
   "probability_of_default": 0.0162,
   "credit_score": 687,
@@ -728,7 +785,7 @@ curl -X POST http://127.0.0.1:8000/score \
       }
     ]
   },
-  "audit_id": "TALA-001-4fddb337",
+  "audit_id": "MOBLEND-001-4fddb337",
   "model_version": "2.1.0"
 }
 ```
@@ -922,7 +979,7 @@ After changing config or adding channels, re-run `python3 train.py` to retrain (
 | **Brier** | Calibration error of predicted probabilities | 0.058 |
 | **Precision** | Of predicted defaults, how many are actual defaults | 0.573 |
 | **Recall** | Of actual defaults, how many the model catches | 0.734 |
-| **Features** | Total model input columns | 64 |
+| **Features** | Total model input columns | 89 |
 
 ---
 
@@ -945,7 +1002,7 @@ After changing config or adding channels, re-run `python3 train.py` to retrain (
 ### Built ✅
 
 - Multi-channel feature engineering (M-Pesa, SACCO, bank, **mobile digital lenders**)
-- **Lending history** and **phone alternative data** features (64 total)
+- **Phone data** (SMS, call log, contacts, apps) — 76 total features
 - **Loan limit engine** with increase/decrease/maintain/suspend logic
 - Training pipeline with Gini, KS, Brier evaluation
 - Scorecard conversion (300–850, PDO)

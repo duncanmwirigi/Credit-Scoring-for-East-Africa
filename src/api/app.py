@@ -63,7 +63,7 @@ app = FastAPI(
     title="East Africa Credit Scoring API",
         description=(
             "Credit scoring for M-Pesa, SACCO, bank, and mobile digital lenders "
-            "(Tala, Branch, Zenka, etc.) with SHAP explainability and audit trails."
+            "with SHAP explainability and audit trails."
         ),
     version="1.0.0",
     lifespan=lifespan,

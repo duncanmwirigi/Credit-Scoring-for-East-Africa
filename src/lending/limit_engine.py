@@ -95,6 +95,14 @@ class LoanLimitEngine:
                 limit *= self.settings["alternative_data_adjustments"]["loan_stacking_apps_multiplier"]
                 reasons.append("Multiple lending apps detected (stacking risk).")
 
+            if float(features.get("call_collection_agency_count_30d", 0)) > 0:
+                limit *= self.settings["alternative_data_adjustments"]["collection_calls_multiplier"]
+                reasons.append("Debt-collection calls detected on phone.")
+
+            if float(features.get("sms_collection_message_count_30d", 0)) > 2:
+                limit *= self.settings["alternative_data_adjustments"]["collection_sms_multiplier"]
+                reasons.append("Debt-collection SMS detected on phone.")
+
         income_cap = applicant.monthly_income_kes * self.settings.get("max_income_multiple", 0.4)
         if limit > income_cap:
             limit = income_cap

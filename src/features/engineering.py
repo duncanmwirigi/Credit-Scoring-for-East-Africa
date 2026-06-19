@@ -42,19 +42,54 @@ LENDING_HISTORY_FEATURES = [
     "months_customer_relationship",
 ]
 
-ALTERNATIVE_DATA_FEATURES = [
+# Which data sources were actually available for this applicant (unbanked-first design).
+DATA_SOURCE_FEATURES = [
+    "has_mpesa_wallet",
+    "has_phone_consent",
+    "has_bank_account",
+    "has_sacco_membership",
+    "has_crb_record",
+]
+
+# Phone permissions data — SMS, call log, contacts, apps, device tech (consent-gated).
+PHONE_DATA_FEATURES = [
     "alternative_data_consent",
     "sms_salary_detected",
     "sms_inferred_monthly_income_kes",
     "sms_mpesa_txn_count_30d",
+    "sms_total_count_30d",
     "sms_bill_pay_regularity",
     "sms_other_lender_repayment_count",
+    "sms_collection_message_count_30d",
+    "sms_lender_promo_count_30d",
     "sms_gambling_ratio",
+    "income_declared_vs_sms_ratio",
+    "call_total_count_30d",
+    "call_unique_contacts_30d",
+    "call_avg_duration_seconds",
+    "call_incoming_ratio",
+    "call_missed_ratio",
+    "call_collection_agency_count_30d",
+    "call_night_activity_ratio",
+    "device_tenure_days",
+    "contacts_count",
+    "contacts_saved_ratio",
     "apps_lending_app_count",
     "apps_gambling_app_count",
-    "income_declared_vs_sms_ratio",
-    "device_tenure_days",
+    "device_os_android",
+    "device_os_version_score",
+    "device_tier",
+    "device_ram_gb",
+    "device_storage_free_ratio",
+    "device_dual_sim",
+    "device_network_4g_plus",
+    "device_model_age_months",
 ]
+
+# Backward-compatible alias used across the codebase.
+ALTERNATIVE_DATA_FEATURES = PHONE_DATA_FEATURES
+
+MPESA_WALLET_CHANNELS = frozenset({Channel.MPESA.value, Channel.UNBANKED.value})
 
 MPESA_FEATURES = [
     "kyc_tier",
@@ -107,11 +142,14 @@ ALL_CHANNEL_FEATURES = (
     MPESA_FEATURES + SACCO_FEATURES + BANK_FEATURES + MOBILE_LENDER_FEATURES
 )
 
-SHARED_BEHAVIOR_FEATURES = LENDING_HISTORY_FEATURES + ALTERNATIVE_DATA_FEATURES
+SHARED_BEHAVIOR_FEATURES = (
+    LENDING_HISTORY_FEATURES + DATA_SOURCE_FEATURES + PHONE_DATA_FEATURES
+)
 
 FEATURE_COLUMNS = COMMON_FEATURES + SHARED_BEHAVIOR_FEATURES + ALL_CHANNEL_FEATURES
 
 _CHANNEL_FEATURE_MAP: dict[Channel, list[str]] = {
+    Channel.UNBANKED: MPESA_FEATURES,
     Channel.MPESA: MPESA_FEATURES,
     Channel.SACCO: SACCO_FEATURES,
     Channel.BANK: BANK_FEATURES,
@@ -120,9 +158,11 @@ _CHANNEL_FEATURE_MAP: dict[Channel, list[str]] = {
 
 DEFAULT_FEATURE_VALUES: dict[str, float] = {
     **{feature: 0.0 for feature in LENDING_HISTORY_FEATURES},
-    **{feature: 0.0 for feature in ALTERNATIVE_DATA_FEATURES},
+    **{feature: 0.0 for feature in DATA_SOURCE_FEATURES},
+    **{feature: 0.0 for feature in PHONE_DATA_FEATURES},
     "lifetime_repayment_rate": 1.0,
     "income_declared_vs_sms_ratio": 1.0,
+    "call_incoming_ratio": 0.5,
 }
 
 
@@ -143,15 +183,21 @@ def enrich_common_features(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def mask_channel_features(frame: pd.DataFrame) -> pd.DataFrame:
+    """Mask channel blocks; bank/SACCO also activate when optional data is present."""
     masked = frame.copy()
     channel = masked["channel"]
 
     for feature in MPESA_FEATURES:
-        masked.loc[channel != Channel.MPESA.value, feature] = 0.0
-    for feature in SACCO_FEATURES:
-        masked.loc[channel != Channel.SACCO.value, feature] = 0.0
+        masked.loc[~channel.isin(MPESA_WALLET_CHANNELS), feature] = 0.0
+
+    has_bank = (channel == Channel.BANK.value) | (masked["has_bank_account"] >= 0.5)
     for feature in BANK_FEATURES:
-        masked.loc[channel != Channel.BANK.value, feature] = 0.0
+        masked.loc[~has_bank, feature] = 0.0
+
+    has_sacco = (channel == Channel.SACCO.value) | (masked["has_sacco_membership"] >= 0.5)
+    for feature in SACCO_FEATURES:
+        masked.loc[~has_sacco, feature] = 0.0
+
     for feature in MOBILE_LENDER_FEATURES:
         masked.loc[channel != Channel.MOBILE_LENDER.value, feature] = 0.0
 
@@ -162,11 +208,12 @@ def mask_alternative_data(frame: pd.DataFrame) -> pd.DataFrame:
     """Zero phone-derived features when the user has not granted consent."""
     masked = frame.copy()
     no_consent = masked["alternative_data_consent"] < 0.5
-    for feature in ALTERNATIVE_DATA_FEATURES:
+    for feature in PHONE_DATA_FEATURES:
         if feature == "alternative_data_consent":
             continue
         masked.loc[no_consent, feature] = 0.0
     masked.loc[no_consent, "income_declared_vs_sms_ratio"] = 1.0
+    masked.loc[no_consent, "call_incoming_ratio"] = 0.5
     return masked
 
 
