@@ -42,8 +42,6 @@ class BankFeatures(BaseModel):
 
 
 class MobileLenderFeatures(BaseModel):
-    """Features for app-based digital lenders (Tala, Branch, Zenka, Okash, etc.)."""
-
     platform_tenure_months: float = Field(ge=0)
     prior_loans_on_platform: float = Field(ge=0)
     platform_repayment_rate: float = Field(ge=0, le=1)
@@ -53,7 +51,34 @@ class MobileLenderFeatures(BaseModel):
     rollover_count_12m: float = Field(ge=0)
     app_engagement_score: float = Field(ge=0, le=1)
     mpesa_disbursement_linked: float = Field(ge=0, le=1)
-    alternative_data_score: float = Field(ge=0, le=1)
+
+
+class LendingHistoryFeatures(BaseModel):
+    lifetime_loans_count: float = Field(ge=0, default=0)
+    lifetime_loans_repaid_on_time: float = Field(ge=0, default=0)
+    lifetime_default_count: float = Field(ge=0, default=0)
+    lifetime_repayment_rate: float = Field(ge=0, le=1, default=1.0)
+    on_time_repayment_streak: float = Field(ge=0, default=0)
+    avg_days_past_due: float = Field(ge=0, default=0)
+    days_since_last_loan: float = Field(ge=0, default=9999)
+    days_since_last_default: float = Field(ge=0, default=9999)
+    current_outstanding_kes: float = Field(ge=0, default=0)
+    highest_prior_limit_kes: float = Field(ge=0, default=0)
+    months_customer_relationship: float = Field(ge=0, default=0)
+
+
+class AlternativeDataFeatures(BaseModel):
+    alternative_data_consent: float = Field(ge=0, le=1, default=0)
+    sms_salary_detected: float = Field(ge=0, le=1, default=0)
+    sms_inferred_monthly_income_kes: float = Field(ge=0, default=0)
+    sms_mpesa_txn_count_30d: float = Field(ge=0, default=0)
+    sms_bill_pay_regularity: float = Field(ge=0, le=1, default=0)
+    sms_other_lender_repayment_count: float = Field(ge=0, default=0)
+    sms_gambling_ratio: float = Field(ge=0, le=1, default=0)
+    apps_lending_app_count: float = Field(ge=0, default=0)
+    apps_gambling_app_count: float = Field(ge=0, default=0)
+    income_declared_vs_sms_ratio: float = Field(ge=0, default=1.0)
+    device_tenure_days: float = Field(ge=0, default=0)
 
 
 class ScoreRequest(BaseModel):
@@ -65,6 +90,8 @@ class ScoreRequest(BaseModel):
     existing_debt_kes: float = Field(ge=0)
     crb_defaults: int = Field(ge=0)
     crb_inquiries_6m: int = Field(ge=0)
+    lending_history: LendingHistoryFeatures = Field(default_factory=LendingHistoryFeatures)
+    alternative_data: AlternativeDataFeatures = Field(default_factory=AlternativeDataFeatures)
     mpesa_features: MpesaFeatures | None = None
     sacco_features: SaccoFeatures | None = None
     bank_features: BankFeatures | None = None
@@ -88,6 +115,8 @@ class ScoreRequest(BaseModel):
 
     def to_applicant(self) -> ApplicantProfile:
         features: dict[str, float] = {}
+        features.update(self.lending_history.model_dump())
+        features.update(self.alternative_data.model_dump())
         if self.mpesa_features:
             features.update(self.mpesa_features.model_dump())
         if self.sacco_features:
@@ -139,6 +168,19 @@ class PolicyResponse(BaseModel):
     reasons: list[str]
 
 
+class LoanLimitResponse(BaseModel):
+    approved_limit_kes: float
+    min_limit_kes: float
+    max_limit_kes: float
+    prior_limit_kes: float
+    requested_limit_kes: float
+    adjustment: str
+    adjustment_pct: float
+    tier: str
+    reasons: list[str]
+    next_review_days: int
+
+
 class ScoreResponse(BaseModel):
     applicant_id: str
     channel: Channel
@@ -146,6 +188,7 @@ class ScoreResponse(BaseModel):
     credit_score: int
     decision: str
     policy: PolicyResponse
+    loan_limit: LoanLimitResponse
     top_risk_factors: list[list[float | str]]
     shap: ShapExplanationResponse | None = None
     audit_id: str | None = None

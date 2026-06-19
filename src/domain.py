@@ -9,13 +9,21 @@ class Channel(str, Enum):
     MPESA = "mpesa"
     SACCO = "sacco"
     BANK = "bank"
-    MOBILE_LENDER = "mobile_lender"  # Tala, Branch, Zenka, Okash, etc.
+    MOBILE_LENDER = "mobile_lender"
 
 
 class Decision(str, Enum):
     APPROVE = "approve"
     REVIEW = "review"
     DECLINE = "decline"
+
+
+class LimitAdjustment(str, Enum):
+    FIRST_TIME = "first_time"
+    INCREASE = "increase"
+    DECREASE = "decrease"
+    MAINTAIN = "maintain"
+    SUSPENDED = "suspended"
 
 
 @dataclass(frozen=True)
@@ -37,6 +45,34 @@ class PolicyOutcome:
     reasons: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class LoanLimitAssignment:
+    approved_limit_kes: float
+    min_limit_kes: float
+    max_limit_kes: float
+    prior_limit_kes: float
+    requested_limit_kes: float
+    adjustment: LimitAdjustment
+    adjustment_pct: float
+    tier: str
+    reasons: tuple[str, ...]
+    next_review_days: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "approved_limit_kes": round(self.approved_limit_kes, 2),
+            "min_limit_kes": self.min_limit_kes,
+            "max_limit_kes": self.max_limit_kes,
+            "prior_limit_kes": self.prior_limit_kes,
+            "requested_limit_kes": self.requested_limit_kes,
+            "adjustment": self.adjustment.value,
+            "adjustment_pct": round(self.adjustment_pct, 4),
+            "tier": self.tier,
+            "reasons": list(self.reasons),
+            "next_review_days": self.next_review_days,
+        }
+
+
 @dataclass
 class CreditDecision:
     applicant_id: str
@@ -46,4 +82,5 @@ class CreditDecision:
     decision: Decision
     policy: PolicyOutcome
     top_risk_factors: list[tuple[str, float]]
+    loan_limit: LoanLimitAssignment | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

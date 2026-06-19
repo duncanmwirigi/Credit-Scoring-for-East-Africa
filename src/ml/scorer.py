@@ -10,7 +10,8 @@ from sklearn.pipeline import Pipeline
 
 from src.config import AppConfig
 from src.domain import ApplicantProfile, Channel, CreditDecision, Decision
-from src.features.engineering import applicant_to_frame, build_feature_matrix
+from src.features.engineering import ALTERNATIVE_DATA_FEATURES, applicant_to_frame, build_feature_matrix
+from src.lending.limit_engine import LoanLimitEngine
 from src.ml.explainability import AuditTrailWriter, ShapExplainerService, ShapExplanation
 from src.policy.engine import PolicyEngine
 
@@ -28,6 +29,7 @@ class CreditScorer:
         self.feature_columns = feature_columns
         self.model_version = model_version or config.version
         self.policy_engine = PolicyEngine(config)
+        self.limit_engine = LoanLimitEngine(config)
         self.shap_service = ShapExplainerService(model, feature_columns)
         self.audit_writer = AuditTrailWriter(config, self.model_version)
 
@@ -86,6 +88,15 @@ class CreditScorer:
             explanations.append(("prior_loan_repayment_rate", 0.18))
         if channel == Channel.BANK and feature_row.get("bounced_cheques_12m", 0) > 0:
             explanations.append(("bounced_cheques_12m", 0.16))
+        if feature_row.get("lifetime_repayment_rate", 1.0) < 0.8 and feature_row.get("lifetime_loans_count", 0) > 0:
+            explanations.append(("lifetime_repayment_rate", 0.22))
+        if feature_row.get("on_time_repayment_streak", 0) >= 5:
+            explanations.append(("on_time_repayment_streak", -0.15))
+        if float(feature_row.get("alternative_data_consent", 0)) >= 0.5:
+            if feature_row.get("apps_lending_app_count", 0) > 3:
+                explanations.append(("apps_lending_app_count", 0.18))
+            if feature_row.get("sms_gambling_ratio", 0) > 0.25:
+                explanations.append(("sms_gambling_ratio", 0.16))
         if channel == Channel.MOBILE_LENDER:
             if feature_row.get("active_digital_loans_count", 0) > 2:
                 explanations.append(("active_digital_loans_count", 0.22))
@@ -131,6 +142,7 @@ class CreditScorer:
                 "monthly_income_kes": applicant.monthly_income_kes,
             },
         )
+        decision.loan_limit = self.limit_engine.assign(applicant, decision)
 
         shap_explanation = None
         audit_id = None

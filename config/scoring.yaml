@@ -1,6 +1,6 @@
 project:
   name: east_africa_credit_scoring
-  version: "1.0.0"
+  version: "2.0.0"
   random_state: 42
 
 data:
@@ -35,6 +35,7 @@ policy:
   max_debt_to_income: 0.45
   max_crb_defaults: 0
   min_monthly_income_kes: 15000
+  require_crb_above_limit_kes: 100000
 
 channel_minimums:
   mpesa:
@@ -54,6 +55,47 @@ channel_minimums:
     min_platform_repayment_rate: 0.80
     max_active_digital_loans: 2
     max_rollover_count_12m: 3
+
+loan_limits:
+  round_to_kes: 500
+  max_income_multiple: 0.40
+  score_multipliers:
+    approve: 1.00
+    review: 0.55
+    decline: 0.00
+  repayment_adjustments:
+    streak_3_multiplier: 1.15
+    streak_6_multiplier: 1.30
+    rate_above_95_multiplier: 1.10
+    recent_default_multiplier: 0.50
+    poor_rate_multiplier: 0.70
+  alternative_data_adjustments:
+    income_verified_multiplier: 1.08
+    high_gambling_multiplier: 0.85
+    loan_stacking_apps_multiplier: 0.75
+  tiers:
+    starter: 0
+    bronze: 15000
+    silver: 50000
+    gold: 150000
+    platinum: 300000
+  channels:
+    mpesa:
+      min_limit_kes: 1000
+      max_limit_kes: 75000
+      first_time_base_kes: 5000
+    mobile_lender:
+      min_limit_kes: 500
+      max_limit_kes: 100000
+      first_time_base_kes: 3000
+    sacco:
+      min_limit_kes: 5000
+      max_limit_kes: 500000
+      first_time_base_kes: 25000
+    bank:
+      min_limit_kes: 10000
+      max_limit_kes: 2000000
+      first_time_base_kes: 50000
 
 paths:
   model_dir: models

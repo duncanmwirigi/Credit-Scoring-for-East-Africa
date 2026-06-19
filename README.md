@@ -9,6 +9,9 @@ It combines channel-specific feature engineering, a calibrated ML model, scoreca
 | Capability | Status | Entry point |
 |------------|--------|-------------|
 | Multi-channel scoring (M-Pesa / SACCO / bank / mobile lender) | ✅ | `score.py`, `/score` |
+| Loan limit assignment (increase / decrease / maintain) | ✅ | `src/lending/limit_engine.py` |
+| Borrowing & repayment history (all channels) | ✅ | `lending_history` in API |
+| Phone alternative data (SMS, apps, income) | ✅ | `alternative_data` in API |
 | ML training + evaluation (AUC, Gini, KS) | ✅ | `train.py` |
 | Calibrated probability of default (PD) | ✅ | `src/ml/trainer.py` |
 | Scorecard mapping (PDO methodology) | ✅ | `src/ml/scorer.py` |
@@ -28,7 +31,7 @@ It combines channel-specific feature engineering, a calibrated ML model, scoreca
 | SACCO | `sacco` | `sacco_features` | Stima, Harambee, Sheria SACCO |
 | Bank | `bank` | `bank_features` | KCB, Equity, Co-op Bank |
 
-The model uses **43 features** total (8 common + 35 channel-specific). Only the feature block matching the applicant's channel is populated; all others are zeroed before scoring.
+The model uses **64 features** total: 8 common + 11 lending history + 11 alternative data + 34 channel-specific (only the block matching the applicant's channel is populated; others are zeroed). Alternative data features are zeroed when `alternative_data_consent < 0.5`.
 
 ## Architecture
 
@@ -41,16 +44,23 @@ flowchart TB
         B[Bank]
     end
 
+    subgraph behavior [Cross-Channel Behaviour]
+        LH[Lending History]
+        AD[Alternative Data]
+    end
+
     subgraph pipeline [Scoring Pipeline]
         FE[Feature Engineering]
         ML[Calibrated ML Model]
         SC[Scorecard 300-850]
         PO[Policy Engine]
+        LE[Loan Limit Engine]
         SH[SHAP Explainer]
     end
 
     subgraph outputs [Outputs]
         DEC[Approve / Review / Decline]
+        LIM[Limit + Tier + Adjustment]
         AT[Audit Trail JSON]
         API[REST API Response]
     end
@@ -59,22 +69,29 @@ flowchart TB
     MLend --> FE
     S --> FE
     B --> FE
+    LH --> FE
+    AD --> FE
     FE --> ML
     ML --> SC
     ML --> SH
     SC --> PO
     PO --> DEC
+    PO --> LE
+    DEC --> LE
+    LE --> LIM
     SH --> AT
     DEC --> API
+    LIM --> API
     AT --> API
 ```
 
 | Layer | Module | Responsibility |
 |-------|--------|----------------|
-| **Feature engineering** | `src/features/engineering.py` | Channel-aware variables; masks inactive channel columns |
+| **Feature engineering** | `src/features/engineering.py` | Channel-aware variables; masks inactive channel columns; respects alt-data consent |
 | **ML model** | `src/ml/trainer.py` | Gradient boosting with sigmoid calibration |
 | **Scorecard** | `src/ml/scorer.py` | PD → credit score using PDO (Points to Double Odds) |
 | **Policy engine** | `src/policy/engine.py` | Hard rules: CRB defaults, DTI caps, channel minimums |
+| **Loan limit engine** | `src/lending/limit_engine.py` | Assigns limits; increases/decreases from repayment patterns and alt data |
 | **SHAP explainability** | `src/ml/explainability.py` | Per-feature risk contributions for audit/disclosure |
 | **Audit trails** | `src/ml/explainability.py` | Timestamped JSON records for compliance review |
 | **REST API** | `src/api/app.py` | Typed HTTP interface with Pydantic validation |
@@ -170,7 +187,6 @@ App-based **mobile loan** providers that disburse and collect via M-Pesa, use al
 | `rollover_count_12m` | Loan extensions/rollovers in last 12 months |
 | `app_engagement_score` | App login and usage engagement (0–1) |
 | `mpesa_disbursement_linked` | M-Pesa linked for disbursement/repayment (0/1) |
-| `alternative_data_score` | Alternative data signal strength — SMS, device, behaviour (0–1) |
 
 **Policy checks:** minimum platform tenure (≥ 1 month), repayment rate (≥ 80%), max active digital loans (≤ 2), max rollovers (≤ 3 in 12m).
 
@@ -200,7 +216,85 @@ App-based **mobile loan** providers that disburse and collect via M-Pesa, use al
 | `crb_defaults` | Active CRB default listings |
 | `crb_inquiries_6m` | CRB inquiries in last 6 months |
 
-## Project structure
+### Lending history (all channels)
+
+Cross-institution borrowing and repayment behaviour — shared by banks, SACCOs, M-Pesa lenders, and mobile apps. Populated via the `lending_history` API block (or aggregated from your loan ledger).
+
+| Feature | Description |
+|---------|-------------|
+| `lifetime_loans_count` | Total loans taken across all lenders |
+| `lifetime_loans_repaid_on_time` | Loans repaid on or before due date |
+| `lifetime_default_count` | Lifetime defaults / write-offs |
+| `lifetime_repayment_rate` | On-time repayments / total loans (0–1) |
+| `on_time_repayment_streak` | Consecutive on-time loans (most recent first) |
+| `avg_days_past_due` | Average days late when overdue |
+| `days_since_last_loan` | Recency of last borrowing |
+| `days_since_last_default` | Recency of last default (9999 if none) |
+| `current_outstanding_kes` | Total outstanding debt (KES) |
+| `highest_prior_limit_kes` | Highest limit previously granted (for adjustments) |
+| `months_customer_relationship` | Months as a customer with your institution |
+
+These features feed both the **ML model** (default risk) and the **loan limit engine** (increase/decrease logic).
+
+### Alternative data (phone signals, all channels)
+
+Granular phone-derived signals when the applicant grants consent (`alternative_data_consent ≥ 0.5`). Without consent, these features are zeroed and excluded from limit bonuses.
+
+| Feature | Description |
+|---------|-------------|
+| `alternative_data_consent` | Explicit consent for SMS/app/device analysis (0/1) |
+| `sms_salary_detected` | Salary-like M-Pesa SMS pattern detected (0/1) |
+| `sms_inferred_monthly_income_kes` | Income inferred from SMS (KES) |
+| `sms_mpesa_txn_count_30d` | M-Pesa transaction SMS count (30 days) |
+| `sms_bill_pay_regularity` | Utility/bill payment regularity from SMS (0–1) |
+| `sms_other_lender_repayment_count` | Repayment SMS from other lenders (30 days) |
+| `sms_gambling_ratio` | Share of SMS related to gambling (0–1) |
+| `apps_lending_app_count` | Installed digital lending apps |
+| `apps_gambling_app_count` | Installed gambling apps |
+| `income_declared_vs_sms_ratio` | Declared income / SMS-inferred income |
+| `device_tenure_days` | Days since device first seen |
+
+**Typical use cases:**
+- Income verification when CRB or payslip is unavailable
+- Detecting **loan stacking** via multiple lending apps
+- Flagging gambling-heavy behaviour that correlates with default
+- Supporting thin-file applicants at SACCOs and mobile lenders
+
+## Loan limit engine
+
+After scoring and policy checks, `LoanLimitEngine` assigns an **approved limit** (KES), a **tier**, and an **adjustment** action. The same engine works across all channels; limits are configured per channel in `config/scoring.yaml`.
+
+| Adjustment | Meaning |
+|------------|---------|
+| `first_time` | No prior limit on record; starter limit from channel base |
+| `increase` | New limit > 105% of prior limit (good streak / repayment) |
+| `decrease` | New limit < 95% of prior limit (defaults, income cap, risk) |
+| `maintain` | Within ±5% of prior limit |
+| `suspended` | Decline or policy fail → limit KES 0 |
+
+**Limit calculation flow:**
+
+1. Start from `highest_prior_limit_kes` (repeat borrower) or `first_time_base_kes` (new borrower).
+2. Apply score multiplier (`approve` 1.0, `review` 0.55, `decline` 0).
+3. Adjust for repayment streak (3+ or 6+ on-time loans), lifetime rate, recent defaults.
+4. Adjust for alt data (verified income ↑, gambling / loan-stacking apps ↓).
+5. Cap at `max_income_multiple × monthly_income` (default 40% of income).
+6. Clamp to channel min/max; round to nearest KES 500.
+7. Compare to prior limit → `increase`, `decrease`, or `maintain`.
+
+**Tiers** (by approved limit): starter → bronze (≥ 15k) → silver (≥ 50k) → gold (≥ 150k) → platinum (≥ 300k).
+
+**Per-channel limits** (config defaults):
+
+| Channel | Min (KES) | Max (KES) | First-time base (KES) |
+|---------|-----------|-----------|------------------------|
+| `mpesa` | 1,000 | 75,000 | 5,000 |
+| `mobile_lender` | 500 | 100,000 | 3,000 |
+| `sacco` | 5,000 | 500,000 | 25,000 |
+| `bank` | 10,000 | 2,000,000 | 50,000 |
+
+**Example:** MPESA-001 with income KES 85,000 and prior limit KES 40,000 may receive KES 34,000 with `DECREASE` because the **income cap** (40% × 85,000 = 34,000) binds before the prior limit — this is intentional conservative lending.
+
 
 ```
 credit_scoring/
@@ -222,7 +316,9 @@ credit_scoring/
 │   ├── api/
 │   │   ├── app.py                # FastAPI application
 │   │   └── schemas.py            # Pydantic request/response models
-│   └── policy/
+│   ├── lending/
+│   │   └── limit_engine.py       # Loan limit assign / adjust logic
+│   ├── policy/
 │       └── engine.py             # Business & regulatory rules
 ├── train.py                      # Training entry point
 ├── score.py                      # CLI scoring + SHAP + audit trails
@@ -297,15 +393,16 @@ python3 train.py
 
 | Metric | Value |
 |--------|-------|
-| ROC-AUC | 0.909 |
-| Gini | 0.818 |
-| KS | 0.815 |
+| ROC-AUC | 0.910 |
+| Gini | 0.821 |
+| KS | 0.811 |
 | Brier score | 0.058 |
 | Test accuracy | 0.903 |
 | Precision | 0.573 |
 | Recall | 0.734 |
 | Default rate | 12% |
-| Feature count | 43 |
+| Feature count | 64 |
+| Model version | 2.0.0 |
 | Train / test split | 6,400 / 1,600 |
 
 **Generated artifacts:**
@@ -332,12 +429,12 @@ python3 score.py
 **Sample output:**
 
 ```
-MPESA-001      | channel=mpesa         | score=688 | pd=1.49%  | decision=APPROVE
-SACCO-014      | channel=sacco         | score=684 | pd=1.72%  | decision=APPROVE
-BANK-203       | channel=bank          | score=664 | pd=3.33%  | decision=REVIEW
-TALA-001       | channel=mobile_lender | score=686 | pd=1.62%  | decision=APPROVE
-TALA-RISK-99   | channel=mobile_lender | score=543 | pd=69.47% | decision=DECLINE
-MPESA-RISK-77  | channel=mpesa         | score=569 | pd=48.78% | decision=DECLINE
+MPESA-001      | channel=mpesa         | score=687 | limit=KES 34,000 | DECREASE  | decision=APPROVE
+SACCO-014      | channel=sacco         | score=687 | limit=KES 48,000 | DECREASE  | decision=APPROVE
+BANK-203       | channel=bank          | score=687 | limit=KES 84,000 | DECREASE  | decision=APPROVE
+TALA-001       | channel=mobile_lender | score=687 | limit=KES 19,000 | MAINTAIN  | decision=APPROVE
+TALA-RISK-99   | channel=mobile_lender | score=561 | limit=KES 0      | SUSPENDED | decision=DECLINE
+MPESA-RISK-77  | channel=mpesa         | score=548 | limit=KES 0      | SUSPENDED | decision=DECLINE
 ```
 
 Re-run `python3 train.py` then `python3 score.py` after config or feature changes to refresh scores.
@@ -348,7 +445,7 @@ Re-run `python3 train.py` then `python3 score.py` after config or feature change
 |----|---------|----------|
 | `MPESA-001` | `mpesa` | Strong M-Pesa wallet profile → APPROVE |
 | `SACCO-014` | `sacco` | Long-tenure SACCO member → APPROVE |
-| `BANK-203` | `bank` | Solid bank relationship → REVIEW |
+| `BANK-203` | `bank` | Solid bank relationship + strong history → APPROVE |
 | `TALA-001` | `mobile_lender` | Repeat Tala/Branch-style borrower → APPROVE |
 | `TALA-RISK-99` | `mobile_lender` | Loan stacking + CRB default → DECLINE |
 | `MPESA-RISK-77` | `mpesa` | High Fuliza use + CRB default → DECLINE |
@@ -393,7 +490,7 @@ curl http://127.0.0.1:8000/health
 {
   "status": "ok",
   "model_loaded": true,
-  "model_version": "1.0.0"
+  "model_version": "2.0.0"
 }
 ```
 
@@ -407,7 +504,38 @@ Returns project name, model file, feature count, scorecard settings, and decisio
 
 ### `POST /score`
 
-Score a single applicant. Set `include_shap: true` and `persist_audit_trail: true` for full regulatory output.
+Score a single applicant. Every request should include **`lending_history`** (borrowing/repayment ledger) and optionally **`alternative_data`** (phone signals with consent). Set `include_shap: true` and `persist_audit_trail: true` for full regulatory output.
+
+**Shared blocks** (all channels):
+
+```json
+"lending_history": {
+  "lifetime_loans_count": 10,
+  "lifetime_loans_repaid_on_time": 10,
+  "lifetime_default_count": 0,
+  "lifetime_repayment_rate": 1.0,
+  "on_time_repayment_streak": 7,
+  "avg_days_past_due": 0.5,
+  "days_since_last_loan": 20,
+  "days_since_last_default": 9999,
+  "current_outstanding_kes": 8000,
+  "highest_prior_limit_kes": 40000,
+  "months_customer_relationship": 24
+},
+"alternative_data": {
+  "alternative_data_consent": 1.0,
+  "sms_salary_detected": 1.0,
+  "sms_inferred_monthly_income_kes": 83300,
+  "sms_mpesa_txn_count_30d": 72,
+  "sms_bill_pay_regularity": 0.91,
+  "sms_other_lender_repayment_count": 1,
+  "sms_gambling_ratio": 0.04,
+  "apps_lending_app_count": 1,
+  "apps_gambling_app_count": 0,
+  "income_declared_vs_sms_ratio": 0.98,
+  "device_tenure_days": 540
+}
+```
 
 **M-Pesa example:**
 
@@ -425,6 +553,22 @@ curl -X POST http://127.0.0.1:8000/score \
     "crb_inquiries_6m": 0,
     "include_shap": true,
     "persist_audit_trail": true,
+    "lending_history": {
+      "lifetime_loans_count": 10,
+      "lifetime_repayment_rate": 1.0,
+      "on_time_repayment_streak": 7,
+      "highest_prior_limit_kes": 40000,
+      "lifetime_default_count": 0,
+      "days_since_last_default": 9999
+    },
+    "alternative_data": {
+      "alternative_data_consent": 1.0,
+      "sms_salary_detected": 1.0,
+      "sms_inferred_monthly_income_kes": 83300,
+      "income_declared_vs_sms_ratio": 0.98,
+      "sms_gambling_ratio": 0.04,
+      "apps_lending_app_count": 1
+    },
     "mpesa_features": {
       "kyc_tier": 3,
       "wallet_activity_days_90d": 88,
@@ -485,6 +629,19 @@ curl -X POST http://127.0.0.1:8000/score \
     "crb_inquiries_6m": 1,
     "include_shap": true,
     "persist_audit_trail": true,
+    "lending_history": {
+      "lifetime_loans_count": 8,
+      "lifetime_repayment_rate": 0.96,
+      "on_time_repayment_streak": 5,
+      "highest_prior_limit_kes": 20000
+    },
+    "alternative_data": {
+      "alternative_data_consent": 1.0,
+      "sms_salary_detected": 1.0,
+      "sms_inferred_monthly_income_kes": 47000,
+      "income_declared_vs_sms_ratio": 0.98,
+      "apps_lending_app_count": 1
+    },
     "mobile_lender_features": {
       "platform_tenure_months": 24,
       "prior_loans_on_platform": 8,
@@ -494,8 +651,7 @@ curl -X POST http://127.0.0.1:8000/score \
       "avg_historical_loan_kes": 12000,
       "rollover_count_12m": 1,
       "app_engagement_score": 0.88,
-      "mpesa_disbursement_linked": 1,
-      "alternative_data_score": 0.79
+      "mpesa_disbursement_linked": 1
     }
   }'
 ```
@@ -509,6 +665,11 @@ curl -X POST http://127.0.0.1:8000/score \
 | `decision` | `approve`, `review`, or `decline` |
 | `policy.passed` | Whether hard policy rules passed |
 | `policy.reasons` | Policy decline reasons (if any) |
+| `loan_limit.approved_limit_kes` | Assigned loan limit (KES) |
+| `loan_limit.adjustment` | `first_time`, `increase`, `decrease`, `maintain`, or `suspended` |
+| `loan_limit.tier` | Limit tier: starter / bronze / silver / gold / platinum |
+| `loan_limit.reasons` | Human-readable limit adjustment reasons |
+| `loan_limit.next_review_days` | Days until limit re-evaluation |
 | `top_risk_factors` | Rule-based risk factor summary |
 | `shap` | SHAP explanation (if requested) |
 | `audit_id` | Audit trail ID (if persisted) |
@@ -521,13 +682,25 @@ curl -X POST http://127.0.0.1:8000/score \
   "applicant_id": "TALA-001",
   "channel": "mobile_lender",
   "probability_of_default": 0.0162,
-  "credit_score": 686,
+  "credit_score": 687,
   "decision": "approve",
   "policy": { "passed": true, "reasons": [] },
+  "loan_limit": {
+    "approved_limit_kes": 19000,
+    "min_limit_kes": 500,
+    "max_limit_kes": 100000,
+    "prior_limit_kes": 20000,
+    "requested_limit_kes": 15000,
+    "adjustment": "maintain",
+    "adjustment_pct": 0.0,
+    "tier": "bronze",
+    "reasons": ["Limit maintained based on current behaviour."],
+    "next_review_days": 90
+  },
   "shap": {
     "base_value": -3.529231,
     "predicted_log_odds": -4.412,
-    "summary": "Primary drivers increasing default risk: none. Primary drivers reducing risk: platform_repayment_rate, debt_to_income, monthly_income_kes.",
+    "summary": "Primary drivers increasing default risk: none. Primary drivers reducing risk: platform_repayment_rate, lifetime_repayment_rate.",
     "contributions": [
       {
         "feature": "platform_repayment_rate",
@@ -538,7 +711,7 @@ curl -X POST http://127.0.0.1:8000/score \
     ]
   },
   "audit_id": "TALA-001-4fddb337",
-  "model_version": "1.0.0"
+  "model_version": "2.0.0"
 }
 ```
 
@@ -639,7 +812,7 @@ Every score can include a **SHAP (SHapley Additive exPlanations)** breakdown sho
 2. The explainer is chosen from the trained base model:
    - `TreeExplainer` for gradient boosting
    - `LinearExplainer` for logistic regression
-3. Only **common + channel-specific** features for the applicant's channel are included (no cross-channel leakage).
+3. Only **common + lending history + alternative data (if consented) + channel-specific** features for the applicant's channel are included (no cross-channel leakage).
 4. Top contributions are ranked by absolute impact.
 5. A plain-language `summary` is generated for non-technical reviewers.
 
@@ -714,6 +887,7 @@ training:           # Model type, calibration, test split
 | `channel_minimums.sacco` | Membership months, share capital, repayment rate |
 | `channel_minimums.bank` | Account age, bounced cheques, min balance |
 | `channel_minimums.mobile_lender` | Platform tenure, repayment rate, loan stacking, rollovers |
+| `loan_limits` | Per-channel min/max/first-time base, score multipliers, repayment & alt-data adjustments, tiers |
 | `training.model_type` | `gradient_boosting` or `logistic_regression` |
 
 After changing config or adding channels, re-run `python3 train.py` to retrain (feature count must match saved model).
@@ -724,13 +898,13 @@ After changing config or adding channels, re-run `python3 train.py` to retrain (
 
 | Metric | Meaning | Latest value |
 |--------|---------|--------------|
-| **ROC-AUC** | Ranking quality of default vs non-default | 0.909 |
-| **Gini** | `2 × AUC − 1`; higher = better separation | 0.818 |
-| **KS** | Maximum separation between score distributions | 0.815 |
+| **ROC-AUC** | Ranking quality of default vs non-default | 0.910 |
+| **Gini** | `2 × AUC − 1`; higher = better separation | 0.821 |
+| **KS** | Maximum separation between score distributions | 0.811 |
 | **Brier** | Calibration error of predicted probabilities | 0.058 |
 | **Precision** | Of predicted defaults, how many are actual defaults | 0.573 |
 | **Recall** | Of actual defaults, how many the model catches | 0.734 |
-| **Features** | Total model input columns | 43 |
+| **Features** | Total model input columns | 64 |
 
 ---
 
@@ -741,8 +915,9 @@ After changing config or adding channels, re-run `python3 train.py` to retrain (
 3. **Calibrated probabilities** — `CalibratedClassifierCV` (sigmoid) improves PD reliability before scorecard mapping.
 4. **Versioned artifacts** — each training run saves a timestamped model, metadata JSON, and feature importance CSV.
 5. **SHAP audit trails** — every API or CLI score can persist a JSON audit file with feature-level explanations.
-6. **FastAPI + Pydantic** — typed request validation per channel; invalid payloads are rejected before scoring.
-7. **Synthetic data only** — no real customer PII. Replace `src/data/synthetic.py` with your ETL/CRB pipeline in production.
+6. **Loan limit engine** — separate from the ML score; limits increase or decrease from repayment streaks, defaults, income caps, and phone-derived signals.
+7. **FastAPI + Pydantic** — typed request validation per channel; invalid payloads are rejected before scoring.
+8. **Synthetic data only** — no real customer PII. Replace `src/data/synthetic.py` with your ETL/CRB pipeline in production.
 
 ---
 
@@ -751,6 +926,8 @@ After changing config or adding channels, re-run `python3 train.py` to retrain (
 ### Built ✅
 
 - Multi-channel feature engineering (M-Pesa, SACCO, bank, **mobile digital lenders**)
+- **Lending history** and **phone alternative data** features (64 total)
+- **Loan limit engine** with increase/decrease/maintain/suspend logic
 - Training pipeline with Gini, KS, Brier evaluation
 - Scorecard conversion (300–850, PDO)
 - Policy engine with channel-specific rules

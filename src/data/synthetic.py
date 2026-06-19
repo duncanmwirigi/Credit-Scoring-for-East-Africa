@@ -5,7 +5,9 @@ import pandas as pd
 
 from src.domain import Channel
 from src.features.engineering import (
+    ALTERNATIVE_DATA_FEATURES,
     BANK_FEATURES,
+    LENDING_HISTORY_FEATURES,
     MOBILE_LENDER_FEATURES,
     MPESA_FEATURES,
     RAW_APPLICANT_FEATURES,
@@ -24,6 +26,76 @@ def _assign_channels(n_samples: int, distribution: dict[str, float], seed: int) 
     return _rng(seed).choice(channels, size=n_samples, p=weights)
 
 
+def _lending_history_good(rng: np.random.Generator) -> dict[str, float]:
+    loans = rng.integers(3, 18)
+    repaid = int(loans * rng.uniform(0.88, 1.0))
+    return {
+        "lifetime_loans_count": loans,
+        "lifetime_loans_repaid_on_time": repaid,
+        "lifetime_default_count": rng.integers(0, 1),
+        "lifetime_repayment_rate": repaid / max(loans, 1),
+        "on_time_repayment_streak": rng.integers(2, 10),
+        "avg_days_past_due": rng.uniform(0, 2),
+        "days_since_last_loan": rng.integers(5, 120),
+        "days_since_last_default": rng.integers(400, 1200),
+        "current_outstanding_kes": rng.uniform(0, 25_000),
+        "highest_prior_limit_kes": rng.uniform(8_000, 80_000),
+        "months_customer_relationship": rng.integers(6, 48),
+    }
+
+
+def _lending_history_risk(rng: np.random.Generator) -> dict[str, float]:
+    loans = rng.integers(1, 8)
+    repaid = int(loans * rng.uniform(0.25, 0.65))
+    return {
+        "lifetime_loans_count": loans,
+        "lifetime_loans_repaid_on_time": repaid,
+        "lifetime_default_count": rng.integers(1, 4),
+        "lifetime_repayment_rate": repaid / max(loans, 1),
+        "on_time_repayment_streak": 0,
+        "avg_days_past_due": rng.uniform(8, 45),
+        "days_since_last_loan": rng.integers(1, 60),
+        "days_since_last_default": rng.integers(10, 200),
+        "current_outstanding_kes": rng.uniform(20_000, 120_000),
+        "highest_prior_limit_kes": rng.uniform(3_000, 20_000),
+        "months_customer_relationship": rng.integers(1, 8),
+    }
+
+
+def _alternative_data_good(rng: np.random.Generator, income: float) -> dict[str, float]:
+    sms_income = income * rng.uniform(0.9, 1.1)
+    return {
+        "alternative_data_consent": 1.0,
+        "sms_salary_detected": 1.0,
+        "sms_inferred_monthly_income_kes": sms_income,
+        "sms_mpesa_txn_count_30d": rng.uniform(25, 120),
+        "sms_bill_pay_regularity": rng.uniform(0.7, 1.0),
+        "sms_other_lender_repayment_count": rng.integers(0, 2),
+        "sms_gambling_ratio": rng.uniform(0.0, 0.08),
+        "apps_lending_app_count": rng.integers(0, 2),
+        "apps_gambling_app_count": rng.integers(0, 1),
+        "income_declared_vs_sms_ratio": sms_income / max(income, 1),
+        "device_tenure_days": rng.integers(120, 900),
+    }
+
+
+def _alternative_data_risk(rng: np.random.Generator, income: float) -> dict[str, float]:
+    sms_income = income * rng.uniform(0.4, 0.75)
+    return {
+        "alternative_data_consent": 1.0,
+        "sms_salary_detected": rng.choice([0.0, 1.0]),
+        "sms_inferred_monthly_income_kes": sms_income,
+        "sms_mpesa_txn_count_30d": rng.uniform(2, 18),
+        "sms_bill_pay_regularity": rng.uniform(0.05, 0.35),
+        "sms_other_lender_repayment_count": rng.integers(3, 10),
+        "sms_gambling_ratio": rng.uniform(0.2, 0.55),
+        "apps_lending_app_count": rng.integers(3, 7),
+        "apps_gambling_app_count": rng.integers(1, 4),
+        "income_declared_vs_sms_ratio": sms_income / max(income, 1),
+        "device_tenure_days": rng.integers(5, 60),
+    }
+
+
 def _mobile_lender_good(rng: np.random.Generator) -> dict[str, float]:
     return {
         "platform_tenure_months": rng.integers(6, 48),
@@ -35,7 +107,6 @@ def _mobile_lender_good(rng: np.random.Generator) -> dict[str, float]:
         "rollover_count_12m": rng.integers(0, 2),
         "app_engagement_score": rng.uniform(0.72, 1.0),
         "mpesa_disbursement_linked": 1.0,
-        "alternative_data_score": rng.uniform(0.62, 0.95),
     }
 
 
@@ -49,20 +120,22 @@ def _mobile_lender_risk(rng: np.random.Generator) -> dict[str, float]:
         "avg_historical_loan_kes": rng.uniform(1_000, 8_000),
         "rollover_count_12m": rng.integers(4, 10),
         "app_engagement_score": rng.uniform(0.08, 0.38),
-        "mpesa_disbursement_linked": rng.choice([0.0, 1.0]),
-        "alternative_data_score": rng.uniform(0.10, 0.42),
+        "mpesa_disbursement_linked": 1.0,
     }
 
 
 def _good_profile(channel: str, rng: np.random.Generator) -> dict[str, float]:
+    income = rng.uniform(35_000, 180_000)
     base = {
         "age": rng.integers(24, 55),
-        "monthly_income_kes": rng.uniform(35_000, 180_000),
+        "monthly_income_kes": income,
         "requested_amount_kes": rng.uniform(20_000, 250_000),
         "existing_debt_kes": rng.uniform(0, 80_000),
         "crb_defaults": 0,
         "crb_inquiries_6m": rng.integers(0, 2),
     }
+    base.update(_lending_history_good(rng))
+    base.update(_alternative_data_good(rng, income))
 
     if channel == Channel.MPESA.value:
         base.update(
@@ -112,14 +185,17 @@ def _good_profile(channel: str, rng: np.random.Generator) -> dict[str, float]:
 
 
 def _risk_profile(channel: str, rng: np.random.Generator) -> dict[str, float]:
+    income = rng.uniform(12_000, 35_000)
     base = {
         "age": rng.integers(18, 30),
-        "monthly_income_kes": rng.uniform(12_000, 35_000),
+        "monthly_income_kes": income,
         "requested_amount_kes": rng.uniform(80_000, 400_000),
         "existing_debt_kes": rng.uniform(60_000, 220_000),
         "crb_defaults": rng.integers(1, 3),
         "crb_inquiries_6m": rng.integers(3, 8),
     }
+    base.update(_lending_history_risk(rng))
+    base.update(_alternative_data_risk(rng, income))
 
     if channel == Channel.MPESA.value:
         base.update(
@@ -170,7 +246,14 @@ def _risk_profile(channel: str, rng: np.random.Generator) -> dict[str, float]:
 
 
 def _zero_fill_channel_features(row: dict[str, float], channel: str) -> dict[str, float]:
-    all_features = MPESA_FEATURES + SACCO_FEATURES + BANK_FEATURES + MOBILE_LENDER_FEATURES
+    all_features = (
+        LENDING_HISTORY_FEATURES
+        + ALTERNATIVE_DATA_FEATURES
+        + MPESA_FEATURES
+        + SACCO_FEATURES
+        + BANK_FEATURES
+        + MOBILE_LENDER_FEATURES
+    )
     for feature in all_features:
         row.setdefault(feature, 0.0)
 
@@ -202,8 +285,15 @@ def generate_synthetic_portfolio(
     default_flags[:n_defaults] = 1
     rng.shuffle(default_flags)
 
+    all_features = (
+        LENDING_HISTORY_FEATURES
+        + ALTERNATIVE_DATA_FEATURES
+        + MPESA_FEATURES
+        + SACCO_FEATURES
+        + BANK_FEATURES
+        + MOBILE_LENDER_FEATURES
+    )
     records: list[dict[str, float | str | int]] = []
-    all_channel_features = MPESA_FEATURES + SACCO_FEATURES + BANK_FEATURES + MOBILE_LENDER_FEATURES
     for idx, (channel, is_default) in enumerate(zip(channels, default_flags)):
         flip_profile = rng.random() < 0.08
         profile_is_default = is_default if not flip_profile else not is_default
@@ -216,7 +306,7 @@ def generate_synthetic_portfolio(
         }
         for key in RAW_APPLICANT_FEATURES:
             record[key] = profile[key]
-        for key in all_channel_features:
+        for key in all_features:
             record[key] = profile[key]
         records.append(record)
 

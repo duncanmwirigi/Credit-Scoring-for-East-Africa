@@ -27,6 +27,34 @@ RAW_APPLICANT_FEATURES = [
     "crb_inquiries_6m",
 ]
 
+LENDING_HISTORY_FEATURES = [
+    "lifetime_loans_count",
+    "lifetime_loans_repaid_on_time",
+    "lifetime_default_count",
+    "lifetime_repayment_rate",
+    "on_time_repayment_streak",
+    "avg_days_past_due",
+    "days_since_last_loan",
+    "days_since_last_default",
+    "current_outstanding_kes",
+    "highest_prior_limit_kes",
+    "months_customer_relationship",
+]
+
+ALTERNATIVE_DATA_FEATURES = [
+    "alternative_data_consent",
+    "sms_salary_detected",
+    "sms_inferred_monthly_income_kes",
+    "sms_mpesa_txn_count_30d",
+    "sms_bill_pay_regularity",
+    "sms_other_lender_repayment_count",
+    "sms_gambling_ratio",
+    "apps_lending_app_count",
+    "apps_gambling_app_count",
+    "income_declared_vs_sms_ratio",
+    "device_tenure_days",
+]
+
 MPESA_FEATURES = [
     "kyc_tier",
     "wallet_activity_days_90d",
@@ -71,14 +99,15 @@ MOBILE_LENDER_FEATURES = [
     "rollover_count_12m",
     "app_engagement_score",
     "mpesa_disbursement_linked",
-    "alternative_data_score",
 ]
 
 ALL_CHANNEL_FEATURES = (
     MPESA_FEATURES + SACCO_FEATURES + BANK_FEATURES + MOBILE_LENDER_FEATURES
 )
 
-FEATURE_COLUMNS = COMMON_FEATURES + ALL_CHANNEL_FEATURES
+SHARED_BEHAVIOR_FEATURES = LENDING_HISTORY_FEATURES + ALTERNATIVE_DATA_FEATURES
+
+FEATURE_COLUMNS = COMMON_FEATURES + SHARED_BEHAVIOR_FEATURES + ALL_CHANNEL_FEATURES
 
 _CHANNEL_FEATURE_MAP: dict[Channel, list[str]] = {
     Channel.MPESA: MPESA_FEATURES,
@@ -87,10 +116,17 @@ _CHANNEL_FEATURE_MAP: dict[Channel, list[str]] = {
     Channel.MOBILE_LENDER: MOBILE_LENDER_FEATURES,
 }
 
+DEFAULT_FEATURE_VALUES: dict[str, float] = {
+    **{feature: 0.0 for feature in LENDING_HISTORY_FEATURES},
+    **{feature: 0.0 for feature in ALTERNATIVE_DATA_FEATURES},
+    "lifetime_repayment_rate": 1.0,
+    "income_declared_vs_sms_ratio": 1.0,
+}
+
 
 def active_features_for_channel(channel: Channel) -> frozenset[str]:
-    """Common + channel-specific columns that may appear in explanations."""
-    return frozenset(COMMON_FEATURES + _CHANNEL_FEATURE_MAP[channel])
+    """Features that may appear in explanations for a channel."""
+    return frozenset(COMMON_FEATURES + SHARED_BEHAVIOR_FEATURES + _CHANNEL_FEATURE_MAP[channel])
 
 
 def enrich_common_features(frame: pd.DataFrame) -> pd.DataFrame:
@@ -105,7 +141,6 @@ def enrich_common_features(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def mask_channel_features(frame: pd.DataFrame) -> pd.DataFrame:
-    """Zero out channel-specific columns that do not apply to each row."""
     masked = frame.copy()
     channel = masked["channel"]
 
@@ -121,9 +156,22 @@ def mask_channel_features(frame: pd.DataFrame) -> pd.DataFrame:
     return masked
 
 
+def mask_alternative_data(frame: pd.DataFrame) -> pd.DataFrame:
+    """Zero phone-derived features when the user has not granted consent."""
+    masked = frame.copy()
+    no_consent = masked["alternative_data_consent"] < 0.5
+    for feature in ALTERNATIVE_DATA_FEATURES:
+        if feature == "alternative_data_consent":
+            continue
+        masked.loc[no_consent, feature] = 0.0
+    masked.loc[no_consent, "income_declared_vs_sms_ratio"] = 1.0
+    return masked
+
+
 def build_feature_matrix(frame: pd.DataFrame) -> pd.DataFrame:
     enriched = enrich_common_features(frame)
     masked = mask_channel_features(enriched)
+    masked = mask_alternative_data(masked)
     return masked[FEATURE_COLUMNS]
 
 
@@ -140,6 +188,8 @@ def applicant_to_frame(applicants: Iterable) -> pd.DataFrame:
             "crb_defaults": applicant.crb_defaults,
             "crb_inquiries_6m": applicant.crb_inquiries_6m,
         }
+        for feature, default in DEFAULT_FEATURE_VALUES.items():
+            row[feature] = applicant.features.get(feature, default)
         for feature in ALL_CHANNEL_FEATURES:
             row[feature] = applicant.features.get(feature, 0.0)
         rows.append(row)

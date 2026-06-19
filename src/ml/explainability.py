@@ -15,7 +15,7 @@ from sklearn.tree import BaseDecisionTree
 
 from src.config import AppConfig
 from src.domain import Channel, CreditDecision
-from src.features.engineering import active_features_for_channel
+from src.features.engineering import ALTERNATIVE_DATA_FEATURES, active_features_for_channel
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,7 @@ class RegulatoryAuditTrail:
     policy_passed: bool
     policy_reasons: tuple[str, ...]
     shap: dict[str, Any]
+    loan_limit: dict[str, Any]
     request_snapshot: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -139,11 +140,15 @@ class ShapExplainerService:
         base_value = self._default_class_base_value(explainer)
         raw_row = feature_matrix.iloc[0]
         allowed_features = active_features_for_channel(channel)
+        has_alt_consent = float(raw_row.get("alternative_data_consent", 0)) >= 0.5
 
         contributions: list[FeatureContribution] = []
         for feature, shap_value in zip(self.feature_names, row_values):
             if feature not in allowed_features:
                 continue
+            if feature in ALTERNATIVE_DATA_FEATURES and feature != "alternative_data_consent":
+                if not has_alt_consent:
+                    continue
             raw_value = float(raw_row[feature])
             impact = "increases_default_risk" if shap_value > 0 else "decreases_default_risk"
             contributions.append(
@@ -202,6 +207,7 @@ class AuditTrailWriter:
             policy_passed=decision.policy.passed,
             policy_reasons=decision.policy.reasons,
             shap=shap_explanation.to_dict(),
+            loan_limit=decision.loan_limit.to_dict() if decision.loan_limit else {},
             request_snapshot=request_snapshot,
         )
         path = self.audit_dir / f"{audit_id}.json"

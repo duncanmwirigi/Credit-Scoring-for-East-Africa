@@ -20,6 +20,67 @@ logging.basicConfig(
 logger = logging.getLogger("credit_scoring.score")
 
 
+def _alt_data(income: float, *, good: bool) -> dict[str, float]:
+    if good:
+        sms_income = income * 0.98
+        return {
+            "alternative_data_consent": 1.0,
+            "sms_salary_detected": 1.0,
+            "sms_inferred_monthly_income_kes": sms_income,
+            "sms_mpesa_txn_count_30d": 72,
+            "sms_bill_pay_regularity": 0.91,
+            "sms_other_lender_repayment_count": 1,
+            "sms_gambling_ratio": 0.04,
+            "apps_lending_app_count": 1,
+            "apps_gambling_app_count": 0,
+            "income_declared_vs_sms_ratio": sms_income / income,
+            "device_tenure_days": 540,
+        }
+    return {
+        "alternative_data_consent": 1.0,
+        "sms_salary_detected": 0.0,
+        "sms_inferred_monthly_income_kes": income * 0.55,
+        "sms_mpesa_txn_count_30d": 9,
+        "sms_bill_pay_regularity": 0.18,
+        "sms_other_lender_repayment_count": 6,
+        "sms_gambling_ratio": 0.38,
+        "apps_lending_app_count": 5,
+        "apps_gambling_app_count": 2,
+        "income_declared_vs_sms_ratio": 0.55,
+        "device_tenure_days": 40,
+    }
+
+
+def _history(*, good: bool, prior_limit: float = 0) -> dict[str, float]:
+    if good:
+        return {
+            "lifetime_loans_count": 10,
+            "lifetime_loans_repaid_on_time": 10,
+            "lifetime_default_count": 0,
+            "lifetime_repayment_rate": 1.0,
+            "on_time_repayment_streak": 7,
+            "avg_days_past_due": 0.5,
+            "days_since_last_loan": 20,
+            "days_since_last_default": 9999,
+            "current_outstanding_kes": 8_000,
+            "highest_prior_limit_kes": prior_limit or 35_000,
+            "months_customer_relationship": 24,
+        }
+    return {
+        "lifetime_loans_count": 4,
+        "lifetime_loans_repaid_on_time": 2,
+        "lifetime_default_count": 2,
+        "lifetime_repayment_rate": 0.5,
+        "on_time_repayment_streak": 0,
+        "avg_days_past_due": 22,
+        "days_since_last_loan": 15,
+        "days_since_last_default": 45,
+        "current_outstanding_kes": 42_000,
+        "highest_prior_limit_kes": prior_limit or 12_000,
+        "months_customer_relationship": 5,
+    }
+
+
 def sample_applicants() -> list[ApplicantProfile]:
     return [
         ApplicantProfile(
@@ -32,6 +93,8 @@ def sample_applicants() -> list[ApplicantProfile]:
             crb_defaults=0,
             crb_inquiries_6m=0,
             features={
+                **_history(good=True, prior_limit=40_000),
+                **_alt_data(85_000, good=True),
                 "kyc_tier": 3,
                 "wallet_activity_days_90d": 88,
                 "avg_monthly_txn_count": 95,
@@ -53,6 +116,8 @@ def sample_applicants() -> list[ApplicantProfile]:
             crb_defaults=0,
             crb_inquiries_6m=0,
             features={
+                **_history(good=True, prior_limit=150_000),
+                **_alt_data(120_000, good=True),
                 "membership_months": 72,
                 "share_capital_kes": 95_000,
                 "monthly_savings_kes": 18_000,
@@ -73,6 +138,8 @@ def sample_applicants() -> list[ApplicantProfile]:
             crb_defaults=0,
             crb_inquiries_6m=0,
             features={
+                **_history(good=True, prior_limit=300_000),
+                **_alt_data(210_000, good=True),
                 "account_age_months": 60,
                 "avg_monthly_balance_kes": 280_000,
                 "salary_deposit_regularity": 0.98,
@@ -93,6 +160,8 @@ def sample_applicants() -> list[ApplicantProfile]:
             crb_defaults=0,
             crb_inquiries_6m=1,
             features={
+                **_history(good=True, prior_limit=20_000),
+                **_alt_data(48_000, good=True),
                 "platform_tenure_months": 24,
                 "prior_loans_on_platform": 8,
                 "platform_repayment_rate": 0.96,
@@ -102,7 +171,6 @@ def sample_applicants() -> list[ApplicantProfile]:
                 "rollover_count_12m": 1,
                 "app_engagement_score": 0.88,
                 "mpesa_disbursement_linked": 1.0,
-                "alternative_data_score": 0.79,
             },
         ),
         ApplicantProfile(
@@ -115,6 +183,8 @@ def sample_applicants() -> list[ApplicantProfile]:
             crb_defaults=1,
             crb_inquiries_6m=6,
             features={
+                **_history(good=False, prior_limit=10_000),
+                **_alt_data(14_000, good=False),
                 "platform_tenure_months": 2,
                 "prior_loans_on_platform": 2,
                 "platform_repayment_rate": 0.45,
@@ -124,7 +194,6 @@ def sample_applicants() -> list[ApplicantProfile]:
                 "rollover_count_12m": 7,
                 "app_engagement_score": 0.22,
                 "mpesa_disbursement_linked": 1.0,
-                "alternative_data_score": 0.18,
             },
         ),
         ApplicantProfile(
@@ -137,6 +206,8 @@ def sample_applicants() -> list[ApplicantProfile]:
             crb_defaults=1,
             crb_inquiries_6m=5,
             features={
+                **_history(good=False, prior_limit=8_000),
+                **_alt_data(18_000, good=False),
                 "kyc_tier": 1,
                 "wallet_activity_days_90d": 11,
                 "avg_monthly_txn_count": 8,
@@ -171,6 +242,7 @@ def main() -> None:
             "decision": decision.decision.value,
             "policy_passed": decision.policy.passed,
             "policy_reasons": list(decision.policy.reasons),
+            "loan_limit": decision.loan_limit.to_dict() if decision.loan_limit else {},
             "top_risk_factors": decision.top_risk_factors,
             "audit_id": audit_id,
             "metadata": decision.metadata,
@@ -178,14 +250,15 @@ def main() -> None:
         if shap_explanation:
             entry["shap"] = shap_explanation.to_dict()
         payload.append(entry)
+        limit = decision.loan_limit
         logger.info(
-            "%s | channel=%s | score=%s | pd=%.2f%% | decision=%s | audit=%s",
+            "%s | channel=%s | score=%s | limit=KES %s | %s | decision=%s",
             decision.applicant_id,
             decision.channel.value,
             decision.credit_score,
-            decision.probability_of_default * 100,
+            f"{limit.approved_limit_kes:,.0f}" if limit else "0",
+            limit.adjustment.value.upper() if limit else "N/A",
             decision.decision.value.upper(),
-            audit_id,
         )
 
     output_path = config.reports_dir / "sample_decisions.json"
