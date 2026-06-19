@@ -4,9 +4,9 @@ import json
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 from sklearn.pipeline import Pipeline
 
@@ -92,7 +92,11 @@ class ShapExplainerService:
             row_values = shap_values[0]
 
         expected = self._get_explainer().expected_value
-        base_value = float(expected[1] if isinstance(expected, (list, tuple)) else expected)
+        if isinstance(expected, (list, tuple)):
+            base_value = float(expected[1])
+        else:
+            expected_array = np.asarray(expected)
+            base_value = float(expected_array.flat[1 if expected_array.size > 1 else 0])
         raw_row = feature_matrix.iloc[0]
 
         contributions: list[FeatureContribution] = []

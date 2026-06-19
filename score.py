@@ -110,30 +110,38 @@ def sample_applicants() -> list[ApplicantProfile]:
 def main() -> None:
     config = load_config()
     scorer = CreditScorer.from_latest(config)
-    decisions = scorer.score_batch(sample_applicants())
 
     payload = []
-    for decision in decisions:
-        payload.append(
-            {
-                "applicant_id": decision.applicant_id,
-                "channel": decision.channel.value,
-                "probability_of_default": decision.probability_of_default,
-                "credit_score": decision.credit_score,
-                "decision": decision.decision.value,
-                "policy_passed": decision.policy.passed,
-                "policy_reasons": list(decision.policy.reasons),
-                "top_risk_factors": decision.top_risk_factors,
-                "metadata": decision.metadata,
-            }
+    for applicant in sample_applicants():
+        decision, shap_explanation, audit_id = scorer.score_with_audit(
+            applicant,
+            include_shap=True,
+            persist_audit_trail=True,
+            request_snapshot={"source": "score.py"},
         )
+        entry = {
+            "applicant_id": decision.applicant_id,
+            "channel": decision.channel.value,
+            "probability_of_default": decision.probability_of_default,
+            "credit_score": decision.credit_score,
+            "decision": decision.decision.value,
+            "policy_passed": decision.policy.passed,
+            "policy_reasons": list(decision.policy.reasons),
+            "top_risk_factors": decision.top_risk_factors,
+            "audit_id": audit_id,
+            "metadata": decision.metadata,
+        }
+        if shap_explanation:
+            entry["shap"] = shap_explanation.to_dict()
+        payload.append(entry)
         logger.info(
-            "%s | channel=%s | score=%s | pd=%.2f%% | decision=%s",
+            "%s | channel=%s | score=%s | pd=%.2f%% | decision=%s | audit=%s",
             decision.applicant_id,
             decision.channel.value,
             decision.credit_score,
             decision.probability_of_default * 100,
             decision.decision.value.upper(),
+            audit_id,
         )
 
     output_path = config.reports_dir / "sample_decisions.json"
