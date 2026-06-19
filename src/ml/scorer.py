@@ -135,7 +135,7 @@ class CreditScorer:
         shap_explanation = None
         audit_id = None
         if include_shap:
-            shap_explanation = self.shap_service.explain(matrix)
+            shap_explanation = self.shap_service.explain(matrix, applicant.channel)
 
         if persist_audit_trail and shap_explanation is not None:
             trail = self.audit_writer.write(

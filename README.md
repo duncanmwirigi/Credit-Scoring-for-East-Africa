@@ -636,14 +636,19 @@ Every score can include a **SHAP (SHapley Additive exPlanations)** breakdown sho
 ### How SHAP is used here
 
 1. Applicant features are preprocessed through the same pipeline used at training time.
-2. `TreeExplainer` computes Shapley values on the underlying gradient boosting model.
-3. Top contributions are ranked by absolute impact.
-4. A plain-language `summary` is generated for non-technical reviewers.
+2. The explainer is chosen from the trained base model:
+   - `TreeExplainer` for gradient boosting
+   - `LinearExplainer` for logistic regression
+3. Only **common + channel-specific** features for the applicant's channel are included (no cross-channel leakage).
+4. Top contributions are ranked by absolute impact.
+5. A plain-language `summary` is generated for non-technical reviewers.
 
 | `shap_value` sign | Meaning |
 |-------------------|---------|
 | **Positive** | Feature **increases** default risk |
 | **Negative** | Feature **decreases** default risk |
+
+**Important:** SHAP attributions explain the **underlying base classifier** (pre-calibration log-odds). The credit score uses the **calibrated** probability of default. The `explanation_scope` field in each audit trail documents this distinction.
 
 ### Audit trail format
 
@@ -656,13 +661,14 @@ When `persist_audit_trail: true`, a JSON file is written to `assets/audit_trails
 | `model_version` | Model version that produced the score |
 | `applicant_id` | Applicant identifier |
 | `channel` | Lending channel (`mpesa`, `sacco`, `bank`, `mobile_lender`) |
-| `probability_of_default` | Final PD used for scorecard |
+| `probability_of_default` | Final **calibrated** PD used for scorecard |
 | `credit_score` | Final scorecard score |
 | `decision` | Final decision (`approve` / `review` / `decline`) |
 | `policy_passed` | Whether policy rules passed |
 | `policy_reasons` | Hard-rule decline reasons (independent of ML) |
-| `shap.contributions` | Top feature impacts with raw values |
+| `shap.contributions` | Top feature impacts (channel-scoped only) |
 | `shap.summary` | Plain-language explanation |
+| `shap.explanation_scope` | Notes that SHAP reflects pre-calibration base model |
 | `request_snapshot` | Input payload used for the decision |
 
 ---

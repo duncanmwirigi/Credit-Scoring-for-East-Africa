@@ -9,7 +9,7 @@ import yaml
 
 @dataclass(frozen=True)
 class ScorecardConfig:
-    base_score: int = 600
+    base_score: int = 680
     base_odds: int = 50
     pdo: int = 20
     min_score: int = 300

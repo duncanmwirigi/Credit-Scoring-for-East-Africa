@@ -130,6 +130,7 @@ class ShapExplanationResponse(BaseModel):
     base_value: float
     predicted_log_odds: float
     summary: str
+    explanation_scope: str
     contributions: list[FeatureContributionResponse]
 
 

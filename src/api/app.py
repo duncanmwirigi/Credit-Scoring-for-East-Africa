@@ -86,6 +86,7 @@ def _build_response(decision, shap_explanation, audit_id, model_version) -> Scor
             base_value=shap_explanation.base_value,
             predicted_log_odds=shap_explanation.predicted_log_odds,
             summary=shap_explanation.summary,
+            explanation_scope=shap_explanation.explanation_scope,
             contributions=[
                 FeatureContributionResponse(
                     feature=item.feature,

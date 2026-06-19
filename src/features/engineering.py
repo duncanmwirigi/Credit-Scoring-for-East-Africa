@@ -80,6 +80,18 @@ ALL_CHANNEL_FEATURES = (
 
 FEATURE_COLUMNS = COMMON_FEATURES + ALL_CHANNEL_FEATURES
 
+_CHANNEL_FEATURE_MAP: dict[Channel, list[str]] = {
+    Channel.MPESA: MPESA_FEATURES,
+    Channel.SACCO: SACCO_FEATURES,
+    Channel.BANK: BANK_FEATURES,
+    Channel.MOBILE_LENDER: MOBILE_LENDER_FEATURES,
+}
+
+
+def active_features_for_channel(channel: Channel) -> frozenset[str]:
+    """Common + channel-specific columns that may appear in explanations."""
+    return frozenset(COMMON_FEATURES + _CHANNEL_FEATURE_MAP[channel])
+
 
 def enrich_common_features(frame: pd.DataFrame) -> pd.DataFrame:
     enriched = frame.copy()
