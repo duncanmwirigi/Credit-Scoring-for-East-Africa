@@ -7,9 +7,10 @@ data:
   n_samples: 8000
   default_rate: 0.12
   channel_distribution:
-    mpesa: 0.45
-    sacco: 0.30
-    bank: 0.25
+    mpesa: 0.30
+    mobile_lender: 0.25
+    sacco: 0.25
+    bank: 0.20
 
 training:
   test_size: 0.20
@@ -48,6 +49,11 @@ channel_minimums:
     min_account_age_months: 6
     max_bounced_cheques_12m: 1
     min_avg_balance_kes: 10000
+  mobile_lender:
+    min_platform_tenure_months: 1
+    min_platform_repayment_rate: 0.80
+    max_active_digital_loans: 2
+    max_rollover_count_12m: 3
 
 paths:
   model_dir: models

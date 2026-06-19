@@ -41,6 +41,21 @@ class BankFeatures(BaseModel):
     branch_relationship_score: float = Field(ge=0, le=1)
 
 
+class MobileLenderFeatures(BaseModel):
+    """Features for app-based digital lenders (Tala, Branch, Zenka, Okash, etc.)."""
+
+    platform_tenure_months: float = Field(ge=0)
+    prior_loans_on_platform: float = Field(ge=0)
+    platform_repayment_rate: float = Field(ge=0, le=1)
+    days_since_last_repayment: float = Field(ge=0)
+    active_digital_loans_count: float = Field(ge=0)
+    avg_historical_loan_kes: float = Field(ge=0)
+    rollover_count_12m: float = Field(ge=0)
+    app_engagement_score: float = Field(ge=0, le=1)
+    mpesa_disbursement_linked: float = Field(ge=0, le=1)
+    alternative_data_score: float = Field(ge=0, le=1)
+
+
 class ScoreRequest(BaseModel):
     applicant_id: str = Field(min_length=1, max_length=64)
     channel: Channel
@@ -53,6 +68,7 @@ class ScoreRequest(BaseModel):
     mpesa_features: MpesaFeatures | None = None
     sacco_features: SaccoFeatures | None = None
     bank_features: BankFeatures | None = None
+    mobile_lender_features: MobileLenderFeatures | None = None
     include_shap: bool = True
     persist_audit_trail: bool = True
 
@@ -64,6 +80,10 @@ class ScoreRequest(BaseModel):
             raise ValueError("sacco_features are required when channel is sacco.")
         if self.channel == Channel.BANK and self.bank_features is None:
             raise ValueError("bank_features are required when channel is bank.")
+        if self.channel == Channel.MOBILE_LENDER and self.mobile_lender_features is None:
+            raise ValueError(
+                "mobile_lender_features are required when channel is mobile_lender."
+            )
         return self
 
     def to_applicant(self) -> ApplicantProfile:
@@ -74,6 +94,8 @@ class ScoreRequest(BaseModel):
             features.update(self.sacco_features.model_dump())
         if self.bank_features:
             features.update(self.bank_features.model_dump())
+        if self.mobile_lender_features:
+            features.update(self.mobile_lender_features.model_dump())
 
         return ApplicantProfile(
             applicant_id=self.applicant_id,

@@ -22,6 +22,11 @@ logger = logging.getLogger("credit_scoring.train")
 def main() -> None:
     config = load_config()
     logger.info("Starting training for %s v%s", config.project_name, config.version)
+    logger.info(
+        "Portfolio: %s samples | channel mix: %s",
+        config.data["n_samples"],
+        config.data["channel_distribution"],
+    )
 
     dataset = generate_synthetic_portfolio(
         n_samples=config.data["n_samples"],

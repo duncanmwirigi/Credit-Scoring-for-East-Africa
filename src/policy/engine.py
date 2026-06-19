@@ -66,4 +66,14 @@ class PolicyEngine:
             if features.get("avg_monthly_balance_kes", 0) < rules.get("min_avg_balance_kes", 0):
                 reasons.append("Average monthly balance below bank threshold.")
 
+        elif applicant.channel == Channel.MOBILE_LENDER:
+            if features.get("platform_tenure_months", 0) < rules.get("min_platform_tenure_months", 0):
+                reasons.append("Insufficient tenure on digital lending platform.")
+            if features.get("platform_repayment_rate", 1) < rules.get("min_platform_repayment_rate", 0):
+                reasons.append("Historical repayment rate on platform below minimum.")
+            if features.get("active_digital_loans_count", 0) > rules.get("max_active_digital_loans", 99):
+                reasons.append("Too many active digital loans (loan stacking detected).")
+            if features.get("rollover_count_12m", 0) > rules.get("max_rollover_count_12m", 99):
+                reasons.append("Excessive loan rollovers/extensions in last 12 months.")
+
         return reasons

@@ -1,14 +1,14 @@
 # East Africa Credit Scoring Engine
 
-A production-style **credit scoring platform** for **M-Pesa**, **SACCO**, and **bank** lending in East Africa. It combines channel-specific feature engineering, a calibrated ML model, scorecard conversion (300–850), deterministic policy rules, **SHAP explainability**, and a **FastAPI REST service** with regulatory audit trails.
+A production-style **credit scoring platform** for **M-Pesa**, **SACCO**, **bank**, and **mobile digital lender** channels in East Africa — covering telco-led lending, co-operatives, traditional banks, and app-based lenders such as **Tala**, **Branch**, **Zenka**, and **Okash**.
 
-Built for the same layered architecture used in mature fintech and banking stacks — suitable for digital lenders, SACCOs, and banks operating in Kenya and the wider East African market.
+It combines channel-specific feature engineering, a calibrated ML model, scorecard conversion (300–850), deterministic policy rules, **SHAP explainability**, and a **FastAPI REST service** with regulatory audit trails.
 
 ## Platform at a glance
 
 | Capability | Status | Entry point |
 |------------|--------|-------------|
-| Multi-channel scoring (M-Pesa / SACCO / bank) | ✅ | `score.py`, `/score` |
+| Multi-channel scoring (M-Pesa / SACCO / bank / mobile lender) | ✅ | `score.py`, `/score` |
 | ML training + evaluation (AUC, Gini, KS) | ✅ | `train.py` |
 | Calibrated probability of default (PD) | ✅ | `src/ml/trainer.py` |
 | Scorecard mapping (PDO methodology) | ✅ | `src/ml/scorer.py` |
@@ -19,12 +19,24 @@ Built for the same layered architecture used in mature fintech and banking stack
 | OpenAPI / Swagger docs | ✅ | `/docs` |
 | Synthetic training data (no PII) | ✅ | `src/data/synthetic.py` |
 
+## Supported channels
+
+| Channel | `channel` value | API feature block | Examples |
+|---------|-----------------|-------------------|----------|
+| M-Pesa mobile money | `mpesa` | `mpesa_features` | Safaricom lending, Fuliza |
+| Mobile digital lender | `mobile_lender` | `mobile_lender_features` | Tala, Branch, Zenka, Okash |
+| SACCO | `sacco` | `sacco_features` | Stima, Harambee, Sheria SACCO |
+| Bank | `bank` | `bank_features` | KCB, Equity, Co-op Bank |
+
+The model uses **43 features** total (8 common + 35 channel-specific). Only the feature block matching the applicant's channel is populated; all others are zeroed before scoring.
+
 ## Architecture
 
 ```mermaid
 flowchart TB
     subgraph inputs [Input Channels]
         M[M-Pesa]
+        MLend[Mobile Lender]
         S[SACCO]
         B[Bank]
     end
@@ -38,21 +50,22 @@ flowchart TB
     end
 
     subgraph outputs [Outputs]
-        D[Approve / Review / Decline]
+        DEC[Approve / Review / Decline]
         AT[Audit Trail JSON]
         API[REST API Response]
     end
 
     M --> FE
+    MLend --> FE
     S --> FE
     B --> FE
     FE --> ML
     ML --> SC
     ML --> SH
     SC --> PO
-    PO --> D
+    PO --> DEC
     SH --> AT
-    D --> API
+    DEC --> API
     AT --> API
 ```
 
@@ -76,7 +89,7 @@ flowchart TB
 
 ## Channel coverage
 
-One unified model serves all three channels. Channel-specific features are zeroed out for rows that do not belong to that channel, so each applicant is scored on the signals that matter for their lending path.
+One unified model serves all four channels. Channel-specific features are zeroed out for rows that do not belong to that channel, so each applicant is scored on the signals that matter for their lending path.
 
 ### M-Pesa (mobile money)
 
@@ -92,7 +105,13 @@ One unified model serves all three channels. Channel-specific features are zeroe
 | `wallet_balance_volatility` | Balance fluctuation measure |
 | `days_since_last_txn` | Recency of last transaction |
 
-**Policy checks:** minimum KYC tier, max Fuliza utilization, minimum wallet activity.
+**Policy checks:** minimum KYC tier (≥ 2), max Fuliza utilization (≤ 85%), minimum wallet activity (≥ 30 days in 90d).
+
+| Config key | Threshold |
+|------------|-----------|
+| `min_kyc_tier` | 2 |
+| `max_fuliza_utilization` | 0.85 |
+| `min_wallet_activity_days_90d` | 30 |
 
 ### SACCO (co-operative lending)
 
@@ -107,7 +126,13 @@ One unified model serves all three channels. Channel-specific features are zeroe
 | `guarantor_avg_score` | Average guarantor credit score |
 | `dividend_years` | Years dividends received |
 
-**Policy checks:** minimum membership, share capital, repayment rate.
+**Policy checks:** minimum membership (≥ 6 months), share capital (≥ KES 5,000), repayment rate (≥ 85%).
+
+| Config key | Threshold |
+|------------|-----------|
+| `min_membership_months` | 6 |
+| `min_share_capital_kes` | 5,000 |
+| `min_repayment_rate` | 0.85 |
 
 ### Bank (traditional lending)
 
@@ -122,7 +147,45 @@ One unified model serves all three channels. Channel-specific features are zeroe
 | `existing_loan_count` | Number of existing loans |
 | `branch_relationship_score` | Branch relationship strength (0–1) |
 
-**Policy checks:** minimum account age, max bounced cheques, minimum average balance.
+**Policy checks:** minimum account age (≥ 6 months), max bounced cheques (≤ 1 in 12m), minimum balance (≥ KES 10,000).
+
+| Config key | Threshold |
+|------------|-----------|
+| `min_account_age_months` | 6 |
+| `max_bounced_cheques_12m` | 1 |
+| `min_avg_balance_kes` | 10,000 |
+
+### Mobile digital lender (Tala, Branch, Zenka, Okash, etc.)
+
+App-based **mobile loan** providers that disburse and collect via M-Pesa, use alternative data (SMS, app usage, device signals), and often serve underbanked customers with short-term, high-frequency loans.
+
+| Feature | Description |
+|---------|-------------|
+| `platform_tenure_months` | Months as a customer on the lending app |
+| `prior_loans_on_platform` | Number of previous loans with this lender |
+| `platform_repayment_rate` | Historical on-time repayment rate (0–1) |
+| `days_since_last_repayment` | Recency of last successful repayment |
+| `active_digital_loans_count` | Active loans across digital lenders (loan stacking) |
+| `avg_historical_loan_kes` | Average past loan size (KES) |
+| `rollover_count_12m` | Loan extensions/rollovers in last 12 months |
+| `app_engagement_score` | App login and usage engagement (0–1) |
+| `mpesa_disbursement_linked` | M-Pesa linked for disbursement/repayment (0/1) |
+| `alternative_data_score` | Alternative data signal strength — SMS, device, behaviour (0–1) |
+
+**Policy checks:** minimum platform tenure (≥ 1 month), repayment rate (≥ 80%), max active digital loans (≤ 2), max rollovers (≤ 3 in 12m).
+
+| Config key | Threshold |
+|------------|-----------|
+| `min_platform_tenure_months` | 1 |
+| `min_platform_repayment_rate` | 0.80 |
+| `max_active_digital_loans` | 2 |
+| `max_rollover_count_12m` | 3 |
+
+**Typical use cases:**
+- First-time vs repeat borrower limits on Tala or Branch
+- Detecting **loan stacking** across multiple digital lenders
+- Pricing repeat borrowers with strong platform repayment history
+- Declining applicants with excessive rollovers or CRB defaults
 
 ### Common features (all channels)
 
@@ -191,6 +254,8 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+`requirements.txt` includes: `scikit-learn`, `numpy`, `pandas`, `matplotlib`, `pyyaml`, `joblib`, `fastapi`, `uvicorn`, `shap`, `pydantic`.
+
 > **Note:** Install `scikit-learn`, not the deprecated PyPI package `sklearn`.
 
 ## Quick start
@@ -222,7 +287,7 @@ python3 train.py
 
 **What it does:**
 
-1. Generates 8,000 synthetic applicants (45% M-Pesa, 30% SACCO, 25% bank).
+1. Generates 8,000 synthetic applicants (30% M-Pesa, 25% mobile lender, 25% SACCO, 20% bank).
 2. Splits 80/20 train/test with stratification on default label.
 3. Trains `GradientBoostingClassifier` wrapped in `CalibratedClassifierCV`.
 4. Evaluates on hold-out test set.
@@ -232,12 +297,16 @@ python3 train.py
 
 | Metric | Value |
 |--------|-------|
-| ROC-AUC | 0.895 |
-| Gini | 0.791 |
-| KS | 0.797 |
-| Brier score | 0.059 |
-| Test accuracy | 0.905 |
+| ROC-AUC | 0.909 |
+| Gini | 0.818 |
+| KS | 0.815 |
+| Brier score | 0.058 |
+| Test accuracy | 0.903 |
+| Precision | 0.573 |
+| Recall | 0.734 |
 | Default rate | 12% |
+| Feature count | 43 |
+| Train / test split | 6,400 / 1,600 |
 
 **Generated artifacts:**
 
@@ -254,7 +323,7 @@ python3 train.py
 
 ## 2. CLI scoring (`score.py`)
 
-Scores four sample applicants covering all channels plus a high-risk M-Pesa case. Each score includes SHAP explainability and a persisted audit trail.
+Scores six sample applicants across all channels — including **Tala-style mobile lender** cases — plus high-risk M-Pesa and mobile lender scenarios. Each score includes SHAP explainability and a persisted audit trail.
 
 ```bash
 python3 score.py
@@ -263,11 +332,26 @@ python3 score.py
 **Sample output:**
 
 ```
-MPESA-001     | channel=mpesa | score=687 | pd=1.54% | decision=APPROVE | audit=MPESA-001-86f743a6
-SACCO-014     | channel=sacco | score=686 | pd=1.62% | decision=APPROVE | audit=SACCO-014-e5d87edd
-BANK-203      | channel=bank  | score=686 | pd=1.57% | decision=APPROVE | audit=BANK-203-887056f6
-MPESA-RISK-77 | channel=mpesa | score=546 | pd=67.76% | decision=DECLINE | audit=MPESA-RISK-77-593f9ca2
+MPESA-001      | channel=mpesa         | score=688 | pd=1.49%  | decision=APPROVE
+SACCO-014      | channel=sacco         | score=684 | pd=1.72%  | decision=APPROVE
+BANK-203       | channel=bank          | score=664 | pd=3.33%  | decision=REVIEW
+TALA-001       | channel=mobile_lender | score=686 | pd=1.62%  | decision=APPROVE
+TALA-RISK-99   | channel=mobile_lender | score=543 | pd=69.47% | decision=DECLINE
+MPESA-RISK-77  | channel=mpesa         | score=569 | pd=48.78% | decision=DECLINE
 ```
+
+Re-run `python3 train.py` then `python3 score.py` after config or feature changes to refresh scores.
+
+**Sample applicants scored by `score.py`:**
+
+| ID | Channel | Scenario |
+|----|---------|----------|
+| `MPESA-001` | `mpesa` | Strong M-Pesa wallet profile → APPROVE |
+| `SACCO-014` | `sacco` | Long-tenure SACCO member → APPROVE |
+| `BANK-203` | `bank` | Solid bank relationship → REVIEW |
+| `TALA-001` | `mobile_lender` | Repeat Tala/Branch-style borrower → APPROVE |
+| `TALA-RISK-99` | `mobile_lender` | Loan stacking + CRB default → DECLINE |
+| `MPESA-RISK-77` | `mpesa` | High Fuliza use + CRB default → DECLINE |
 
 **Generated artifacts:**
 
@@ -385,6 +469,37 @@ curl -X POST http://127.0.0.1:8000/score \
 }
 ```
 
+**Mobile digital lender example** (Tala / Branch) — use `"channel": "mobile_lender"` and provide `mobile_lender_features`:
+
+```bash
+curl -X POST http://127.0.0.1:8000/score \
+  -H "Content-Type: application/json" \
+  -d '{
+    "applicant_id": "TALA-001",
+    "channel": "mobile_lender",
+    "age": 31,
+    "monthly_income_kes": 48000,
+    "requested_amount_kes": 15000,
+    "existing_debt_kes": 8000,
+    "crb_defaults": 0,
+    "crb_inquiries_6m": 1,
+    "include_shap": true,
+    "persist_audit_trail": true,
+    "mobile_lender_features": {
+      "platform_tenure_months": 24,
+      "prior_loans_on_platform": 8,
+      "platform_repayment_rate": 0.96,
+      "days_since_last_repayment": 12,
+      "active_digital_loans_count": 1,
+      "avg_historical_loan_kes": 12000,
+      "rollover_count_12m": 1,
+      "app_engagement_score": 0.88,
+      "mpesa_disbursement_linked": 1,
+      "alternative_data_score": 0.79
+    }
+  }'
+```
+
 **Response fields:**
 
 | Field | Description |
@@ -403,26 +518,26 @@ curl -X POST http://127.0.0.1:8000/score \
 
 ```json
 {
-  "applicant_id": "MPESA-001",
-  "channel": "mpesa",
-  "probability_of_default": 0.0154,
-  "credit_score": 687,
+  "applicant_id": "TALA-001",
+  "channel": "mobile_lender",
+  "probability_of_default": 0.0162,
+  "credit_score": 686,
   "decision": "approve",
   "policy": { "passed": true, "reasons": [] },
   "shap": {
     "base_value": -3.529231,
-    "predicted_log_odds": -4.45234,
-    "summary": "Primary drivers increasing default risk: none. Primary drivers reducing risk: debt_to_income, monthly_income_kes, avg_monthly_txn_count.",
+    "predicted_log_odds": -4.412,
+    "summary": "Primary drivers increasing default risk: none. Primary drivers reducing risk: platform_repayment_rate, debt_to_income, monthly_income_kes.",
     "contributions": [
       {
-        "feature": "debt_to_income",
-        "raw_value": 0.0588,
-        "shap_value": -0.377464,
+        "feature": "platform_repayment_rate",
+        "raw_value": 0.96,
+        "shap_value": -0.42,
         "impact": "decreases_default_risk"
       }
     ]
   },
-  "audit_id": "MPESA-001-86f743a6",
+  "audit_id": "TALA-001-4fddb337",
   "model_version": "1.0.0"
 }
 ```
@@ -478,7 +593,14 @@ flowchart TD
 | **REVIEW** | Policy passed **and** 550 ≤ score < 680 |
 | **DECLINE** | Policy failed **or** score < 550 |
 
-Policy failures always result in **DECLINE**, regardless of credit score. Examples: active CRB default, DTI above 45%, M-Pesa KYC tier too low, SACCO membership too short.
+Policy failures always result in **DECLINE**, regardless of credit score. Examples:
+
+- Active **CRB default** (all channels)
+- **Debt-to-income** above 45% (all channels)
+- M-Pesa **KYC tier** too low or **Fuliza** over-utilised
+- SACCO **membership** or **share capital** below minimum
+- Bank **bounced cheques** or low average balance
+- Mobile lender **loan stacking** (too many active digital loans) or **excessive rollovers**
 
 ### Scorecard formula
 
@@ -533,7 +655,7 @@ When `persist_audit_trail: true`, a JSON file is written to `assets/audit_trails
 | `scored_at` | UTC timestamp of the decision |
 | `model_version` | Model version that produced the score |
 | `applicant_id` | Applicant identifier |
-| `channel` | Lending channel (`mpesa`, `sacco`, `bank`) |
+| `channel` | Lending channel (`mpesa`, `sacco`, `bank`, `mobile_lender`) |
 | `probability_of_default` | Final PD used for scorecard |
 | `credit_score` | Final scorecard score |
 | `decision` | Final decision (`approve` / `review` / `decline`) |
@@ -550,26 +672,45 @@ When `persist_audit_trail: true`, a JSON file is written to `assets/audit_trails
 All thresholds live in `config/scoring.yaml` — no magic numbers in code.
 
 ```yaml
-# Key sections
+data:
+  n_samples: 8000
+  default_rate: 0.12
+  channel_distribution:
+    mpesa: 0.30
+    mobile_lender: 0.25
+    sacco: 0.25
+    bank: 0.20
+
+channel_minimums:
+  mobile_lender:
+    min_platform_tenure_months: 1
+    min_platform_repayment_rate: 0.80
+    max_active_digital_loans: 2
+    max_rollover_count_12m: 3
+```
+
+```yaml
+# Other key sections
 scorecard:          # PDO scorecard settings
 decision_bands:     # approve / review thresholds
 policy:             # Global rules (age, DTI, CRB, income)
-channel_minimums:   # Per-channel rules (M-Pesa, SACCO, bank)
+channel_minimums:   # Per-channel rules (all four channels)
 training:           # Model type, calibration, test split
-data:               # Synthetic portfolio size and mix
 ```
 
 | Section | What to tune |
 |---------|--------------|
+| `data.channel_distribution` | Mix: 30% M-Pesa, 25% mobile lender, 25% SACCO, 20% bank |
 | `scorecard` | Base score, PDO, min/max score bounds |
-| `decision_bands` | Approve and review thresholds |
-| `policy` | Minimum age, max DTI (45%), CRB defaults, income floor (KES 15,000) |
+| `decision_bands` | Approve (≥ 680) and review (≥ 550) thresholds |
+| `policy` | Minimum age (18), max DTI (45%), CRB defaults (0), income floor (KES 15,000) |
 | `channel_minimums.mpesa` | KYC tier, Fuliza cap, wallet activity |
 | `channel_minimums.sacco` | Membership months, share capital, repayment rate |
 | `channel_minimums.bank` | Account age, bounced cheques, min balance |
+| `channel_minimums.mobile_lender` | Platform tenure, repayment rate, loan stacking, rollovers |
 | `training.model_type` | `gradient_boosting` or `logistic_regression` |
 
-After changing config, re-run `python3 train.py` to retrain.
+After changing config or adding channels, re-run `python3 train.py` to retrain (feature count must match saved model).
 
 ---
 
@@ -577,19 +718,20 @@ After changing config, re-run `python3 train.py` to retrain.
 
 | Metric | Meaning | Latest value |
 |--------|---------|--------------|
-| **ROC-AUC** | Ranking quality of default vs non-default | 0.895 |
-| **Gini** | `2 × AUC − 1`; higher = better separation | 0.791 |
-| **KS** | Maximum separation between score distributions | 0.797 |
-| **Brier** | Calibration error of predicted probabilities | 0.059 |
-| **Precision** | Of predicted defaults, how many are actual defaults | 0.579 |
-| **Recall** | Of actual defaults, how many the model catches | 0.760 |
+| **ROC-AUC** | Ranking quality of default vs non-default | 0.909 |
+| **Gini** | `2 × AUC − 1`; higher = better separation | 0.818 |
+| **KS** | Maximum separation between score distributions | 0.815 |
+| **Brier** | Calibration error of predicted probabilities | 0.058 |
+| **Precision** | Of predicted defaults, how many are actual defaults | 0.573 |
+| **Recall** | Of actual defaults, how many the model catches | 0.734 |
+| **Features** | Total model input columns | 43 |
 
 ---
 
 ## Design decisions
 
 1. **Separation of ML and policy** — the model estimates risk; hard rules enforce compliance independently. A high score cannot override an active CRB default.
-2. **Channel masking** — one unified model serves M-Pesa, SACCO, and bank by zeroing irrelevant channel features per row.
+2. **Channel masking** — one unified model serves M-Pesa, SACCO, bank, and mobile digital lenders by zeroing irrelevant channel features per row.
 3. **Calibrated probabilities** — `CalibratedClassifierCV` (sigmoid) improves PD reliability before scorecard mapping.
 4. **Versioned artifacts** — each training run saves a timestamped model, metadata JSON, and feature importance CSV.
 5. **SHAP audit trails** — every API or CLI score can persist a JSON audit file with feature-level explanations.
@@ -602,13 +744,13 @@ After changing config, re-run `python3 train.py` to retrain.
 
 ### Built ✅
 
-- Multi-channel feature engineering (M-Pesa, SACCO, bank)
+- Multi-channel feature engineering (M-Pesa, SACCO, bank, **mobile digital lenders**)
 - Training pipeline with Gini, KS, Brier evaluation
 - Scorecard conversion (300–850, PDO)
 - Policy engine with channel-specific rules
 - SHAP explainability with audit trail persistence
 - FastAPI REST service with Swagger docs
-- CLI scoring with sample applicants
+- CLI scoring with **six sample applicants** (all four channels + two high-risk cases)
 
 ### Next steps
 

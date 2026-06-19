@@ -86,6 +86,13 @@ class CreditScorer:
             explanations.append(("prior_loan_repayment_rate", 0.18))
         if channel == Channel.BANK and feature_row.get("bounced_cheques_12m", 0) > 0:
             explanations.append(("bounced_cheques_12m", 0.16))
+        if channel == Channel.MOBILE_LENDER:
+            if feature_row.get("active_digital_loans_count", 0) > 2:
+                explanations.append(("active_digital_loans_count", 0.22))
+            if feature_row.get("platform_repayment_rate", 1.0) < 0.8:
+                explanations.append(("platform_repayment_rate", 0.20))
+            if feature_row.get("rollover_count_12m", 0) > 2:
+                explanations.append(("rollover_count_12m", 0.18))
         if not explanations:
             explanations.append(("model_ensemble_score", float(probability)))
         return sorted(explanations, key=lambda item: item[1], reverse=True)[:3]

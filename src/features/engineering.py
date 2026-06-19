@@ -61,7 +61,24 @@ BANK_FEATURES = [
     "branch_relationship_score",
 ]
 
-FEATURE_COLUMNS = COMMON_FEATURES + MPESA_FEATURES + SACCO_FEATURES + BANK_FEATURES
+MOBILE_LENDER_FEATURES = [
+    "platform_tenure_months",
+    "prior_loans_on_platform",
+    "platform_repayment_rate",
+    "days_since_last_repayment",
+    "active_digital_loans_count",
+    "avg_historical_loan_kes",
+    "rollover_count_12m",
+    "app_engagement_score",
+    "mpesa_disbursement_linked",
+    "alternative_data_score",
+]
+
+ALL_CHANNEL_FEATURES = (
+    MPESA_FEATURES + SACCO_FEATURES + BANK_FEATURES + MOBILE_LENDER_FEATURES
+)
+
+FEATURE_COLUMNS = COMMON_FEATURES + ALL_CHANNEL_FEATURES
 
 
 def enrich_common_features(frame: pd.DataFrame) -> pd.DataFrame:
@@ -86,6 +103,8 @@ def mask_channel_features(frame: pd.DataFrame) -> pd.DataFrame:
         masked.loc[channel != Channel.SACCO.value, feature] = 0.0
     for feature in BANK_FEATURES:
         masked.loc[channel != Channel.BANK.value, feature] = 0.0
+    for feature in MOBILE_LENDER_FEATURES:
+        masked.loc[channel != Channel.MOBILE_LENDER.value, feature] = 0.0
 
     return masked
 
@@ -109,7 +128,7 @@ def applicant_to_frame(applicants: Iterable) -> pd.DataFrame:
             "crb_defaults": applicant.crb_defaults,
             "crb_inquiries_6m": applicant.crb_inquiries_6m,
         }
-        for feature in MPESA_FEATURES + SACCO_FEATURES + BANK_FEATURES:
+        for feature in ALL_CHANNEL_FEATURES:
             row[feature] = applicant.features.get(feature, 0.0)
         rows.append(row)
     return pd.DataFrame(rows)

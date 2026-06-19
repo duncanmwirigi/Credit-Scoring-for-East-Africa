@@ -6,6 +6,7 @@ import pandas as pd
 from src.domain import Channel
 from src.features.engineering import (
     BANK_FEATURES,
+    MOBILE_LENDER_FEATURES,
     MPESA_FEATURES,
     RAW_APPLICANT_FEATURES,
     SACCO_FEATURES,
@@ -21,6 +22,36 @@ def _assign_channels(n_samples: int, distribution: dict[str, float], seed: int) 
     weights = np.array([distribution[c] for c in channels], dtype=float)
     weights /= weights.sum()
     return _rng(seed).choice(channels, size=n_samples, p=weights)
+
+
+def _mobile_lender_good(rng: np.random.Generator) -> dict[str, float]:
+    return {
+        "platform_tenure_months": rng.integers(6, 48),
+        "prior_loans_on_platform": rng.integers(2, 12),
+        "platform_repayment_rate": rng.uniform(0.90, 1.0),
+        "days_since_last_repayment": rng.integers(0, 45),
+        "active_digital_loans_count": rng.integers(0, 2),
+        "avg_historical_loan_kes": rng.uniform(5_000, 45_000),
+        "rollover_count_12m": rng.integers(0, 2),
+        "app_engagement_score": rng.uniform(0.72, 1.0),
+        "mpesa_disbursement_linked": 1.0,
+        "alternative_data_score": rng.uniform(0.62, 0.95),
+    }
+
+
+def _mobile_lender_risk(rng: np.random.Generator) -> dict[str, float]:
+    return {
+        "platform_tenure_months": rng.integers(0, 4),
+        "prior_loans_on_platform": rng.integers(0, 3),
+        "platform_repayment_rate": rng.uniform(0.30, 0.72),
+        "days_since_last_repayment": rng.integers(60, 240),
+        "active_digital_loans_count": rng.integers(3, 7),
+        "avg_historical_loan_kes": rng.uniform(1_000, 8_000),
+        "rollover_count_12m": rng.integers(4, 10),
+        "app_engagement_score": rng.uniform(0.08, 0.38),
+        "mpesa_disbursement_linked": rng.choice([0.0, 1.0]),
+        "alternative_data_score": rng.uniform(0.10, 0.42),
+    }
 
 
 def _good_profile(channel: str, rng: np.random.Generator) -> dict[str, float]:
@@ -60,6 +91,10 @@ def _good_profile(channel: str, rng: np.random.Generator) -> dict[str, float]:
                 "dividend_years": rng.integers(1, 8),
             }
         )
+    elif channel == Channel.MOBILE_LENDER.value:
+        base.update(_mobile_lender_good(rng))
+        base["requested_amount_kes"] = rng.uniform(2_000, 50_000)
+        base["monthly_income_kes"] = rng.uniform(18_000, 85_000)
     else:
         base.update(
             {
@@ -113,6 +148,11 @@ def _risk_profile(channel: str, rng: np.random.Generator) -> dict[str, float]:
                 "dividend_years": 0,
             }
         )
+    elif channel == Channel.MOBILE_LENDER.value:
+        base.update(_mobile_lender_risk(rng))
+        base["requested_amount_kes"] = rng.uniform(5_000, 30_000)
+        base["monthly_income_kes"] = rng.uniform(8_000, 22_000)
+        base["existing_debt_kes"] = rng.uniform(15_000, 60_000)
     else:
         base.update(
             {
@@ -130,7 +170,8 @@ def _risk_profile(channel: str, rng: np.random.Generator) -> dict[str, float]:
 
 
 def _zero_fill_channel_features(row: dict[str, float], channel: str) -> dict[str, float]:
-    for feature in MPESA_FEATURES + SACCO_FEATURES + BANK_FEATURES:
+    all_features = MPESA_FEATURES + SACCO_FEATURES + BANK_FEATURES + MOBILE_LENDER_FEATURES
+    for feature in all_features:
         row.setdefault(feature, 0.0)
 
     if channel != Channel.MPESA.value:
@@ -141,6 +182,9 @@ def _zero_fill_channel_features(row: dict[str, float], channel: str) -> dict[str
             row[feature] = 0.0
     if channel != Channel.BANK.value:
         for feature in BANK_FEATURES:
+            row[feature] = 0.0
+    if channel != Channel.MOBILE_LENDER.value:
+        for feature in MOBILE_LENDER_FEATURES:
             row[feature] = 0.0
     return row
 
@@ -159,8 +203,8 @@ def generate_synthetic_portfolio(
     rng.shuffle(default_flags)
 
     records: list[dict[str, float | str | int]] = []
+    all_channel_features = MPESA_FEATURES + SACCO_FEATURES + BANK_FEATURES + MOBILE_LENDER_FEATURES
     for idx, (channel, is_default) in enumerate(zip(channels, default_flags)):
-        # Inject ~8% label noise to mimic real-world overlap.
         flip_profile = rng.random() < 0.08
         profile_is_default = is_default if not flip_profile else not is_default
         profile = _risk_profile(channel, rng) if profile_is_default else _good_profile(channel, rng)
@@ -172,7 +216,7 @@ def generate_synthetic_portfolio(
         }
         for key in RAW_APPLICANT_FEATURES:
             record[key] = profile[key]
-        for key in MPESA_FEATURES + SACCO_FEATURES + BANK_FEATURES:
+        for key in all_channel_features:
             record[key] = profile[key]
         records.append(record)
 

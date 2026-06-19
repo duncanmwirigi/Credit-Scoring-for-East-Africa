@@ -9,6 +9,7 @@ class Channel(str, Enum):
     MPESA = "mpesa"
     SACCO = "sacco"
     BANK = "bank"
+    MOBILE_LENDER = "mobile_lender"  # Tala, Branch, Zenka, Okash, etc.
 
 
 class Decision(str, Enum):

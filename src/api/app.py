@@ -60,10 +60,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="East Africa Credit Scoring API",
-    description=(
-        "Credit scoring for M-Pesa, SACCO, and bank channels with "
-        "SHAP explainability and regulatory audit trails."
-    ),
+        description=(
+            "Credit scoring for M-Pesa, SACCO, bank, and mobile digital lenders "
+            "(Tala, Branch, Zenka, etc.) with SHAP explainability and audit trails."
+        ),
     version="1.0.0",
     lifespan=lifespan,
 )
