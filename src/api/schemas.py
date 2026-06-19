@@ -42,15 +42,17 @@ class BankFeatures(BaseModel):
 
 
 class MobileLenderFeatures(BaseModel):
-    platform_tenure_months: float = Field(ge=0)
-    prior_loans_on_platform: float = Field(ge=0)
-    platform_repayment_rate: float = Field(ge=0, le=1)
-    days_since_last_repayment: float = Field(ge=0)
-    active_digital_loans_count: float = Field(ge=0)
-    avg_historical_loan_kes: float = Field(ge=0)
-    rollover_count_12m: float = Field(ge=0)
-    app_engagement_score: float = Field(ge=0, le=1)
-    mpesa_disbursement_linked: float = Field(ge=0, le=1)
+    """M-Pesa statement-derived signals — no third-party lender API required."""
+
+    mpesa_statement_days_covered: float = Field(ge=0, le=365)
+    mpesa_lender_disbursement_count_12m: float = Field(ge=0)
+    mpesa_lender_repayment_count_12m: float = Field(ge=0)
+    mpesa_inferred_repayment_rate: float = Field(ge=0, le=1)
+    mpesa_active_lender_count: float = Field(ge=0)
+    mpesa_avg_inferred_loan_kes: float = Field(ge=0)
+    mpesa_late_repayment_events_12m: float = Field(ge=0)
+    mpesa_loan_rollover_signals_12m: float = Field(ge=0)
+    mpesa_net_cashflow_kes_90d: float = Field(default=0)
 
 
 class LendingHistoryFeatures(BaseModel):

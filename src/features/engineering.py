@@ -28,6 +28,7 @@ RAW_APPLICANT_FEATURES = [
 ]
 
 LENDING_HISTORY_FEATURES = [
+    # Own-institution loan ledger only — not shared by other banks/lenders/SACCOs.
     "lifetime_loans_count",
     "lifetime_loans_repaid_on_time",
     "lifetime_default_count",
@@ -89,16 +90,17 @@ BANK_FEATURES = [
     "branch_relationship_score",
 ]
 
+# Inferred from customer M-Pesa statement — no third-party lender API access.
 MOBILE_LENDER_FEATURES = [
-    "platform_tenure_months",
-    "prior_loans_on_platform",
-    "platform_repayment_rate",
-    "days_since_last_repayment",
-    "active_digital_loans_count",
-    "avg_historical_loan_kes",
-    "rollover_count_12m",
-    "app_engagement_score",
-    "mpesa_disbursement_linked",
+    "mpesa_statement_days_covered",
+    "mpesa_lender_disbursement_count_12m",
+    "mpesa_lender_repayment_count_12m",
+    "mpesa_inferred_repayment_rate",
+    "mpesa_active_lender_count",
+    "mpesa_avg_inferred_loan_kes",
+    "mpesa_late_repayment_events_12m",
+    "mpesa_loan_rollover_signals_12m",
+    "mpesa_net_cashflow_kes_90d",
 ]
 
 ALL_CHANNEL_FEATURES = (

@@ -31,6 +31,21 @@ It combines channel-specific feature engineering, a calibrated ML model, scoreca
 | SACCO | `sacco` | `sacco_features` | Stima, Harambee, Sheria SACCO |
 | Bank | `bank` | `bank_features` | KCB, Equity, Co-op Bank |
 
+## Data sources — statements, not third-party APIs
+
+Competing lenders (Tala, Branch, Zenka, Okash, etc.) **do not share internal platform data**. This platform is designed around what you can actually obtain:
+
+| Source | What you get | Used for |
+|--------|--------------|----------|
+| **Your own loan ledger** | Repayment history, prior limits, defaults | `lending_history` — **scoring institution only** |
+| **M-Pesa statement / SMS** | Salary, repayments to other lenders, gambling, bill pay | `alternative_data` + mobile-lender channel features |
+| **Bank statement** | Balances, salary deposits, bounced cheques | `bank_features` |
+| **SACCO statement** | Share capital, savings, membership, guarantors | `sacco_features` |
+| **M-Pesa wallet data** | KYC tier, Fuliza, transaction patterns | `mpesa_features` |
+| **CRB** (when available) | Defaults, inquiries | `crb_defaults`, `crb_inquiries_6m` |
+
+Cross-lender behaviour (loan stacking, late repayments to Tala/Branch, etc.) is **inferred from the customer's M-Pesa statement**, not from competitor APIs. Use `src/data/statements.py` to parse statement exports into features before calling `/score`.
+
 The model uses **64 features** total: 8 common + 11 lending history + 11 alternative data + 34 channel-specific (only the block matching the applicant's channel is populated; others are zeroed). Alternative data features are zeroed when `alternative_data_consent < 0.5`.
 
 ## Architecture
@@ -174,28 +189,28 @@ One unified model serves all four channels. Channel-specific features are zeroed
 
 ### Mobile digital lender (Tala, Branch, Zenka, Okash, etc.)
 
-App-based **mobile loan** providers that disburse and collect via M-Pesa, use alternative data (SMS, app usage, device signals), and often serve underbanked customers with short-term, high-frequency loans.
+Mobile lenders score applicants using **M-Pesa statements plus their own ledger** — not data from other fintech platforms. Competitor activity (disbursements, repayments, stacking) is inferred from M-Pesa paybill/till lines and SMS.
 
-| Feature | Description |
-|---------|-------------|
-| `platform_tenure_months` | Months as a customer on the lending app |
-| `prior_loans_on_platform` | Number of previous loans with this lender |
-| `platform_repayment_rate` | Historical on-time repayment rate (0–1) |
-| `days_since_last_repayment` | Recency of last successful repayment |
-| `active_digital_loans_count` | Active loans across digital lenders (loan stacking) |
-| `avg_historical_loan_kes` | Average past loan size (KES) |
-| `rollover_count_12m` | Loan extensions/rollovers in last 12 months |
-| `app_engagement_score` | App login and usage engagement (0–1) |
-| `mpesa_disbursement_linked` | M-Pesa linked for disbursement/repayment (0/1) |
+| Feature | Description | Source |
+|---------|-------------|--------|
+| `mpesa_statement_days_covered` | Days of M-Pesa statement provided | M-Pesa statement |
+| `mpesa_lender_disbursement_count_12m` | Incoming loans from known lender paybills | M-Pesa statement |
+| `mpesa_lender_repayment_count_12m` | Outgoing repayments to digital lenders | M-Pesa statement |
+| `mpesa_inferred_repayment_rate` | Repayment vs disbursement ratio from statement | M-Pesa statement |
+| `mpesa_active_lender_count` | Distinct lenders with recent debits/credits | M-Pesa statement |
+| `mpesa_avg_inferred_loan_kes` | Average inferred loan size (KES) | M-Pesa statement |
+| `mpesa_late_repayment_events_12m` | Late/overdue payment signals on statement | M-Pesa statement |
+| `mpesa_loan_rollover_signals_12m` | Extension/rollover fee patterns | M-Pesa statement |
+| `mpesa_net_cashflow_kes_90d` | Net inflow minus outflow (90 days) | M-Pesa statement |
 
-**Policy checks:** minimum platform tenure (≥ 1 month), repayment rate (≥ 80%), max active digital loans (≤ 2), max rollovers (≤ 3 in 12m).
+**Policy checks:** minimum statement coverage (≥ 60 days), inferred repayment rate (≥ 80%), max active lenders (≤ 2), max late events (≤ 3 in 12m).
 
 | Config key | Threshold |
 |------------|-----------|
-| `min_platform_tenure_months` | 1 |
-| `min_platform_repayment_rate` | 0.80 |
-| `max_active_digital_loans` | 2 |
-| `max_rollover_count_12m` | 3 |
+| `min_mpesa_statement_days_covered` | 60 |
+| `min_mpesa_inferred_repayment_rate` | 0.80 |
+| `max_mpesa_active_lender_count` | 2 |
+| `max_mpesa_late_repayment_events_12m` | 3 |
 
 **Typical use cases:**
 - First-time vs repeat borrower limits on Tala or Branch
@@ -218,7 +233,9 @@ App-based **mobile loan** providers that disburse and collect via M-Pesa, use al
 
 ### Lending history (all channels)
 
-Cross-institution borrowing and repayment behaviour — shared by banks, SACCOs, M-Pesa lenders, and mobile apps. Populated via the `lending_history` API block (or aggregated from your loan ledger).
+**Your institution's loan ledger only** — banks, SACCOs, and lenders populate this from their own core banking / loan management system. Other institutions do not share this data.
+
+Cross-institution borrowing behaviour is inferred separately from **M-Pesa statements** and **SMS** (see mobile lender features and `alternative_data`).
 
 | Feature | Description |
 |---------|-------------|
@@ -305,7 +322,8 @@ credit_scoring/
 │   ├── config.py                 # Typed YAML config loader
 │   ├── domain.py                 # Applicant, Decision, Policy models
 │   ├── data/
-│   │   └── synthetic.py          # Synthetic portfolio generator
+│   │   ├── synthetic.py          # Synthetic portfolio generator
+│   │   └── statements.py         # M-Pesa statement → feature parser
 │   ├── features/
 │   │   └── engineering.py        # Feature matrix builder + channel masking
 │   ├── ml/
@@ -402,7 +420,7 @@ python3 train.py
 | Recall | 0.734 |
 | Default rate | 12% |
 | Feature count | 64 |
-| Model version | 2.0.0 |
+| Model version | 2.1.0 |
 | Train / test split | 6,400 / 1,600 |
 
 **Generated artifacts:**
@@ -490,7 +508,7 @@ curl http://127.0.0.1:8000/health
 {
   "status": "ok",
   "model_loaded": true,
-  "model_version": "2.0.0"
+  "model_version": "2.1.0"
 }
 ```
 
@@ -643,15 +661,15 @@ curl -X POST http://127.0.0.1:8000/score \
       "apps_lending_app_count": 1
     },
     "mobile_lender_features": {
-      "platform_tenure_months": 24,
-      "prior_loans_on_platform": 8,
-      "platform_repayment_rate": 0.96,
-      "days_since_last_repayment": 12,
-      "active_digital_loans_count": 1,
-      "avg_historical_loan_kes": 12000,
-      "rollover_count_12m": 1,
-      "app_engagement_score": 0.88,
-      "mpesa_disbursement_linked": 1
+      "mpesa_statement_days_covered": 270,
+      "mpesa_lender_disbursement_count_12m": 8,
+      "mpesa_lender_repayment_count_12m": 9,
+      "mpesa_inferred_repayment_rate": 0.96,
+      "mpesa_active_lender_count": 1,
+      "mpesa_avg_inferred_loan_kes": 12000,
+      "mpesa_late_repayment_events_12m": 0,
+      "mpesa_loan_rollover_signals_12m": 1,
+      "mpesa_net_cashflow_kes_90d": 18500
     }
   }'
 ```
@@ -700,10 +718,10 @@ curl -X POST http://127.0.0.1:8000/score \
   "shap": {
     "base_value": -3.529231,
     "predicted_log_odds": -4.412,
-    "summary": "Primary drivers increasing default risk: none. Primary drivers reducing risk: platform_repayment_rate, lifetime_repayment_rate.",
+    "summary": "Primary drivers increasing default risk: none. Primary drivers reducing risk: mpesa_inferred_repayment_rate, lifetime_repayment_rate.",
     "contributions": [
       {
-        "feature": "platform_repayment_rate",
+        "feature": "mpesa_inferred_repayment_rate",
         "raw_value": 0.96,
         "shap_value": -0.42,
         "impact": "decreases_default_risk"
@@ -711,7 +729,7 @@ curl -X POST http://127.0.0.1:8000/score \
     ]
   },
   "audit_id": "TALA-001-4fddb337",
-  "model_version": "2.0.0"
+  "model_version": "2.1.0"
 }
 ```
 
@@ -886,7 +904,7 @@ training:           # Model type, calibration, test split
 | `channel_minimums.mpesa` | KYC tier, Fuliza cap, wallet activity |
 | `channel_minimums.sacco` | Membership months, share capital, repayment rate |
 | `channel_minimums.bank` | Account age, bounced cheques, min balance |
-| `channel_minimums.mobile_lender` | Platform tenure, repayment rate, loan stacking, rollovers |
+| `channel_minimums.mobile_lender` | M-Pesa statement coverage, inferred repayment, lender stacking |
 | `loan_limits` | Per-channel min/max/first-time base, score multipliers, repayment & alt-data adjustments, tiers |
 | `training.model_type` | `gradient_boosting` or `logistic_regression` |
 
@@ -917,7 +935,8 @@ After changing config or adding channels, re-run `python3 train.py` to retrain (
 5. **SHAP audit trails** — every API or CLI score can persist a JSON audit file with feature-level explanations.
 6. **Loan limit engine** — separate from the ML score; limits increase or decrease from repayment streaks, defaults, income caps, and phone-derived signals.
 7. **FastAPI + Pydantic** — typed request validation per channel; invalid payloads are rejected before scoring.
-8. **Synthetic data only** — no real customer PII. Replace `src/data/synthetic.py` with your ETL/CRB pipeline in production.
+8. **Statement-first design** — competitor fintech APIs are not assumed; cross-lender signals come from customer M-Pesa/bank/SACCO statements.
+9. **Synthetic data only** — no real customer PII. Replace `src/data/synthetic.py` with your ETL/CRB pipeline in production.
 
 ---
 

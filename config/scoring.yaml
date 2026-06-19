@@ -1,6 +1,6 @@
 project:
   name: east_africa_credit_scoring
-  version: "2.0.0"
+  version: "2.1.0"
   random_state: 42
 
 data:
@@ -51,10 +51,10 @@ channel_minimums:
     max_bounced_cheques_12m: 1
     min_avg_balance_kes: 10000
   mobile_lender:
-    min_platform_tenure_months: 1
-    min_platform_repayment_rate: 0.80
-    max_active_digital_loans: 2
-    max_rollover_count_12m: 3
+    min_mpesa_statement_days_covered: 60
+    min_mpesa_inferred_repayment_rate: 0.80
+    max_mpesa_active_lender_count: 2
+    max_mpesa_late_repayment_events_12m: 3
 
 loan_limits:
   round_to_kes: 500

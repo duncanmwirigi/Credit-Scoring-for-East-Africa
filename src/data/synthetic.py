@@ -97,30 +97,32 @@ def _alternative_data_risk(rng: np.random.Generator, income: float) -> dict[str,
 
 
 def _mobile_lender_good(rng: np.random.Generator) -> dict[str, float]:
+    disbursements = rng.integers(3, 14)
     return {
-        "platform_tenure_months": rng.integers(6, 48),
-        "prior_loans_on_platform": rng.integers(2, 12),
-        "platform_repayment_rate": rng.uniform(0.90, 1.0),
-        "days_since_last_repayment": rng.integers(0, 45),
-        "active_digital_loans_count": rng.integers(0, 2),
-        "avg_historical_loan_kes": rng.uniform(5_000, 45_000),
-        "rollover_count_12m": rng.integers(0, 2),
-        "app_engagement_score": rng.uniform(0.72, 1.0),
-        "mpesa_disbursement_linked": 1.0,
+        "mpesa_statement_days_covered": rng.integers(90, 365),
+        "mpesa_lender_disbursement_count_12m": disbursements,
+        "mpesa_lender_repayment_count_12m": rng.integers(disbursements, disbursements + 4),
+        "mpesa_inferred_repayment_rate": rng.uniform(0.90, 1.0),
+        "mpesa_active_lender_count": rng.integers(0, 2),
+        "mpesa_avg_inferred_loan_kes": rng.uniform(5_000, 45_000),
+        "mpesa_late_repayment_events_12m": rng.integers(0, 2),
+        "mpesa_loan_rollover_signals_12m": rng.integers(0, 2),
+        "mpesa_net_cashflow_kes_90d": rng.uniform(5_000, 80_000),
     }
 
 
 def _mobile_lender_risk(rng: np.random.Generator) -> dict[str, float]:
+    disbursements = rng.integers(2, 8)
     return {
-        "platform_tenure_months": rng.integers(0, 4),
-        "prior_loans_on_platform": rng.integers(0, 3),
-        "platform_repayment_rate": rng.uniform(0.30, 0.72),
-        "days_since_last_repayment": rng.integers(60, 240),
-        "active_digital_loans_count": rng.integers(3, 7),
-        "avg_historical_loan_kes": rng.uniform(1_000, 8_000),
-        "rollover_count_12m": rng.integers(4, 10),
-        "app_engagement_score": rng.uniform(0.08, 0.38),
-        "mpesa_disbursement_linked": 1.0,
+        "mpesa_statement_days_covered": rng.integers(15, 75),
+        "mpesa_lender_disbursement_count_12m": disbursements,
+        "mpesa_lender_repayment_count_12m": rng.integers(0, max(disbursements, 1)),
+        "mpesa_inferred_repayment_rate": rng.uniform(0.25, 0.72),
+        "mpesa_active_lender_count": rng.integers(3, 7),
+        "mpesa_avg_inferred_loan_kes": rng.uniform(1_000, 8_000),
+        "mpesa_late_repayment_events_12m": rng.integers(4, 12),
+        "mpesa_loan_rollover_signals_12m": rng.integers(4, 10),
+        "mpesa_net_cashflow_kes_90d": rng.uniform(-40_000, 5_000),
     }
 
 

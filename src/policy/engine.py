@@ -67,13 +67,21 @@ class PolicyEngine:
                 reasons.append("Average monthly balance below bank threshold.")
 
         elif applicant.channel == Channel.MOBILE_LENDER:
-            if features.get("platform_tenure_months", 0) < rules.get("min_platform_tenure_months", 0):
-                reasons.append("Insufficient tenure on digital lending platform.")
-            if features.get("platform_repayment_rate", 1) < rules.get("min_platform_repayment_rate", 0):
-                reasons.append("Historical repayment rate on platform below minimum.")
-            if features.get("active_digital_loans_count", 0) > rules.get("max_active_digital_loans", 99):
-                reasons.append("Too many active digital loans (loan stacking detected).")
-            if features.get("rollover_count_12m", 0) > rules.get("max_rollover_count_12m", 99):
-                reasons.append("Excessive loan rollovers/extensions in last 12 months.")
+            if features.get("mpesa_statement_days_covered", 0) < rules.get(
+                "min_mpesa_statement_days_covered", 0
+            ):
+                reasons.append("Insufficient M-Pesa statement history provided.")
+            if features.get("mpesa_inferred_repayment_rate", 1) < rules.get(
+                "min_mpesa_inferred_repayment_rate", 0
+            ):
+                reasons.append("M-Pesa statement shows weak cross-lender repayment behaviour.")
+            if features.get("mpesa_active_lender_count", 0) > rules.get(
+                "max_mpesa_active_lender_count", 99
+            ):
+                reasons.append("Too many active digital lenders on M-Pesa statement (stacking).")
+            if features.get("mpesa_late_repayment_events_12m", 0) > rules.get(
+                "max_mpesa_late_repayment_events_12m", 99
+            ):
+                reasons.append("Late repayment events detected on M-Pesa statement.")
 
         return reasons

@@ -98,12 +98,12 @@ class CreditScorer:
             if feature_row.get("sms_gambling_ratio", 0) > 0.25:
                 explanations.append(("sms_gambling_ratio", 0.16))
         if channel == Channel.MOBILE_LENDER:
-            if feature_row.get("active_digital_loans_count", 0) > 2:
-                explanations.append(("active_digital_loans_count", 0.22))
-            if feature_row.get("platform_repayment_rate", 1.0) < 0.8:
-                explanations.append(("platform_repayment_rate", 0.20))
-            if feature_row.get("rollover_count_12m", 0) > 2:
-                explanations.append(("rollover_count_12m", 0.18))
+            if feature_row.get("mpesa_active_lender_count", 0) > 2:
+                explanations.append(("mpesa_active_lender_count", 0.22))
+            if feature_row.get("mpesa_inferred_repayment_rate", 1.0) < 0.8:
+                explanations.append(("mpesa_inferred_repayment_rate", 0.20))
+            if feature_row.get("mpesa_late_repayment_events_12m", 0) > 2:
+                explanations.append(("mpesa_late_repayment_events_12m", 0.18))
         if not explanations:
             explanations.append(("model_ensemble_score", float(probability)))
         return sorted(explanations, key=lambda item: item[1], reverse=True)[:3]
