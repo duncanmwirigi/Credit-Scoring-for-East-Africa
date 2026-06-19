@@ -1,6 +1,6 @@
 # East Africa Credit Scoring Engine
 
-Production-style **credit scoring** for **M-Pesa**, **SACCO**, and **bank** lending channels. The system combines channel-specific feature engineering, a calibrated ML model, scorecard conversion, and deterministic policy rules — the same layered pattern used in mature fintech and banking stacks.
+Credit scoring for **M-Pesa**, **SACCO**, and **bank** lending channels. The system combines channel-specific feature engineering, a calibrated ML model, scorecard conversion, and deterministic policy rules — the same layered pattern used in mature fintech and banking stacks.
 
 ## Architecture
 
