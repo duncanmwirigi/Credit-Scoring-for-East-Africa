@@ -1,0 +1,54 @@
+project:
+  name: east_africa_credit_scoring
+  version: "1.0.0"
+  random_state: 42
+
+data:
+  n_samples: 8000
+  default_rate: 0.12
+  channel_distribution:
+    mpesa: 0.45
+    sacco: 0.30
+    bank: 0.25
+
+training:
+  test_size: 0.20
+  validation_size: 0.15
+  model_type: gradient_boosting  # logistic_regression | gradient_boosting
+  class_weight: balanced
+  calibration: true
+
+scorecard:
+  base_score: 680
+  base_odds: 50
+  pdo: 20
+  min_score: 300
+  max_score: 850
+
+decision_bands:
+  approve: 680
+  review: 550
+
+policy:
+  min_age: 18
+  max_debt_to_income: 0.45
+  max_crb_defaults: 0
+  min_monthly_income_kes: 15000
+
+channel_minimums:
+  mpesa:
+    min_kyc_tier: 2
+    max_fuliza_utilization: 0.85
+    min_wallet_activity_days_90d: 30
+  sacco:
+    min_membership_months: 6
+    min_share_capital_kes: 5000
+    min_repayment_rate: 0.85
+  bank:
+    min_account_age_months: 6
+    max_bounced_cheques_12m: 1
+    min_avg_balance_kes: 10000
+
+paths:
+  model_dir: models
+  reports_dir: assets

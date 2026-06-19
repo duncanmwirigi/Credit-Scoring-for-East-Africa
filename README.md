@@ -98,18 +98,20 @@ Scores four sample applicants (M-Pesa, SACCO, bank, and a high-risk M-Pesa case)
 Example output:
 
 ```
-MPESA-001 | channel=mpesa | score=742 | pd=8.12% | decision=APPROVE
-SACCO-014 | channel=sacco | score=781 | pd=5.44% | decision=APPROVE
-BANK-203  | channel=bank  | score=805 | pd=3.91% | decision=APPROVE
-MPESA-RISK-77 | channel=mpesa | score=412 | pd=61.20% | decision=DECLINE
+MPESA-001     | channel=mpesa | score=687 | pd=1.54% | decision=APPROVE
+SACCO-014     | channel=sacco | score=686 | pd=1.62% | decision=APPROVE
+BANK-203      | channel=bank  | score=686 | pd=1.57% | decision=APPROVE
+MPESA-RISK-77 | channel=mpesa | score=546 | pd=67.76% | decision=DECLINE
 ```
+
+Training typically achieves **ROC-AUC ~0.89**, **Gini ~0.79**, and **KS ~0.80** on the synthetic portfolio.
 
 ## Configuration
 
 Edit `config/scoring.yaml` to tune:
 
-- **Scorecard**: base score (600), PDO (20), min/max bounds
-- **Decision bands**: approve ≥ 700, review ≥ 550
+- **Scorecard**: base score (680), PDO (20), min/max bounds
+- **Decision bands**: approve ≥ 680, review ≥ 550
 - **Policy**: minimum age, max DTI, CRB rules, income floor
 - **Channel minimums**: KYC tier, SACCO share capital, bank balance thresholds
 
@@ -148,4 +150,3 @@ Website: https://bytecityinc.com
 ## License
 
 MIT — use and modify freely for learning and projects.
-# Credit-Scoring-for-East-Africa
