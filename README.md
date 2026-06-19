@@ -11,7 +11,10 @@ It combines channel-specific feature engineering, a calibrated ML model, scoreca
 | Multi-channel scoring (unbanked / M-Pesa / SACCO / bank / mobile lender) | ✅ | `score.py`, `/score` |
 | Loan limit assignment (increase / decrease / maintain) | ✅ | `src/lending/limit_engine.py` |
 | Borrowing & repayment history (all channels) | ✅ | `lending_history` in API |
-| Phone data (SMS, call log, contacts, apps) | ✅ | `phone_data` in API, `src/data/phone_data.py` |
+| Unbanked-first scoring (`channel: unbanked`) | ✅ | M-Pesa + phone; bank optional |
+| Optional bank / SACCO / CRB enrichment | ✅ | `data_sources` flags |
+| Phone tech (OS, RAM, tier, network) | ✅ | `phone_data.device` |
+| Phone data (SMS, call log, contacts, apps) | ✅ | `phone_data`, `src/data/phone_data.py` |
 | ML training + evaluation (AUC, Gini, KS) | ✅ | `train.py` |
 | Calibrated probability of default (PD) | ✅ | `src/ml/trainer.py` |
 | Scorecard mapping (PDO methodology) | ✅ | `src/ml/scorer.py` |
@@ -29,8 +32,8 @@ It combines channel-specific feature engineering, a calibrated ML model, scoreca
 | Unbanked (primary) | `unbanked` | `mpesa_features` + `phone_data` | No bank account; M-Pesa + phone only |
 | M-Pesa mobile money | `mpesa` | `mpesa_features` | Telco-led lending, Fuliza |
 | Mobile digital lender | `mobile_lender` | `mobile_lender_features` | App-based short-term lenders |
-| SACCO | `sacco` | `sacco_features` | Stima, Harambee, Sheria SACCO |
-| Bank | `bank` | `bank_features` | KCB, Equity, Co-op Bank |
+| SACCO | `sacco` | `sacco_features` | Co-operative societies |
+| Bank | `bank` | `bank_features` | Traditional bank accounts |
 
 ## Data sources — statements, not third-party APIs
 
@@ -60,22 +63,33 @@ Set availability explicitly via the `data_sources` block:
 
 Bank and SACCO features are **included in the score only when their flag is set** — unbanked applicants are not penalised for missing bank data.
 
-The model uses **89 features** total: 8 common + 11 lending history + 5 data-source flags + 31 phone data + 34 channel-specific. Phone features are zeroed when consent is not granted.
+The model uses **89 features** total:
+
+| Group | Count | Notes |
+|-------|-------|-------|
+| Common | 8 | Age, income, debt, CRB |
+| Lending history | 11 | Your institution's ledger only |
+| Data source flags | 5 | What data was available |
+| Phone data | 31 | SMS (10) + calls (7) + device/apps (5) + device tech (8) + consent |
+| Channel-specific | 34 | M-Pesa (9), SACCO (8), bank (8), mobile lender (9) — masked by channel/flags |
+
+Phone features are zeroed when `alternative_data_consent` / `has_phone_consent` is not granted. Bank and SACCO channel columns activate only when their `data_sources` flag is set.
 
 ## Architecture
 
 ```mermaid
 flowchart TB
-    subgraph inputs [Input Channels]
-        M[M-Pesa]
+    subgraph inputs [Primary and Optional Inputs]
+        U[Unbanked / M-Pesa]
         MLend[Mobile Lender]
-        S[SACCO]
-        B[Bank]
+        S[SACCO optional]
+        B[Bank optional]
     end
 
     subgraph behavior [Cross-Channel Behaviour]
+        DS[Data Source Flags]
         LH[Lending History]
-        AD[Alternative Data]
+        PD[Phone Data SMS Calls Device]
     end
 
     subgraph pipeline [Scoring Pipeline]
@@ -94,12 +108,13 @@ flowchart TB
         API[REST API Response]
     end
 
-    M --> FE
+    U --> FE
     MLend --> FE
     S --> FE
     B --> FE
+    DS --> FE
     LH --> FE
-    AD --> FE
+    PD --> FE
     FE --> ML
     ML --> SC
     ML --> SH
@@ -116,11 +131,13 @@ flowchart TB
 
 | Layer | Module | Responsibility |
 |-------|--------|----------------|
-| **Feature engineering** | `src/features/engineering.py` | Channel-aware variables; masks inactive channel columns; respects alt-data consent |
+| **Feature engineering** | `src/features/engineering.py` | Channel masking; optional bank/SACCO when `data_sources` flags set; phone consent gating |
+| **Statement parser** | `src/data/statements.py` | M-Pesa statement → cross-lender features (no third-party APIs) |
+| **Phone parser** | `src/data/phone_data.py` | SMS, call log, device tech → phone features |
 | **ML model** | `src/ml/trainer.py` | Gradient boosting with sigmoid calibration |
 | **Scorecard** | `src/ml/scorer.py` | PD → credit score using PDO (Points to Double Odds) |
 | **Policy engine** | `src/policy/engine.py` | Hard rules: CRB defaults, DTI caps, channel minimums |
-| **Loan limit engine** | `src/lending/limit_engine.py` | Assigns limits; increases/decreases from repayment patterns and alt data |
+| **Loan limit engine** | `src/lending/limit_engine.py` | Assigns limits from score, repayment history, phone/SMS/call signals |
 | **SHAP explainability** | `src/ml/explainability.py` | Per-feature risk contributions for audit/disclosure |
 | **Audit trails** | `src/ml/explainability.py` | Timestamped JSON records for compliance review |
 | **REST API** | `src/api/app.py` | Typed HTTP interface with Pydantic validation |
@@ -135,7 +152,19 @@ flowchart TB
 
 ## Channel coverage
 
-One unified model serves all four channels. Channel-specific features are zeroed out for rows that do not belong to that channel, so each applicant is scored on the signals that matter for their lending path.
+One unified model serves **five channels**. Primary path is **`unbanked`** (M-Pesa + phone). Bank and SACCO features activate only when `data_sources` flags are set — thin-file applicants are not penalised for missing bank data.
+
+### Unbanked (primary path)
+
+Uses **`mpesa_features`** + **`phone_data`** + **`data_sources`**. No bank account required. Relaxed wallet policy vs full M-Pesa channel (KYC tier ≥ 1, ≥ 20 active wallet days).
+
+| Config key | Threshold |
+|------------|-----------|
+| `min_kyc_tier` | 1 |
+| `max_fuliza_utilization` | 0.90 |
+| `min_wallet_activity_days_90d` | 20 |
+
+**Typical unbanked applicant:** M-Pesa wallet + phone SMS/calls/device tech. Optionally add `bank_features` with `has_bank_account: 1` if they also have a bank account.
 
 ### M-Pesa (mobile money)
 
@@ -249,7 +278,19 @@ Mobile lenders score applicants using **M-Pesa statements plus their own ledger*
 
 **Your institution's loan ledger only** — banks, SACCOs, and lenders populate this from their own core banking / loan management system. Other institutions do not share this data.
 
-Cross-institution borrowing behaviour is inferred separately from **M-Pesa statements** and **SMS** (see mobile lender features and `alternative_data`).
+Cross-institution borrowing behaviour is inferred separately from **M-Pesa statements**, **SMS**, and **call log** (see mobile lender features and `phone_data`).
+
+### Data source flags (all channels)
+
+| Feature | Description |
+|---------|-------------|
+| `has_mpesa_wallet` | M-Pesa wallet data available |
+| `has_phone_consent` | Applicant granted SMS/call/device access |
+| `has_bank_account` | Bank statement or account data available |
+| `has_sacco_membership` | SACCO membership data available |
+| `has_crb_record` | CRB bureau record available |
+
+When `has_crb_record` is 0, CRB default policy rules are skipped (appropriate for thin-file unbanked applicants).
 
 | Feature | Description |
 |---------|-------------|
@@ -350,7 +391,7 @@ After scoring and policy checks, `LoanLimitEngine` assigns an **approved limit**
 1. Start from `highest_prior_limit_kes` (repeat borrower) or `first_time_base_kes` (new borrower).
 2. Apply score multiplier (`approve` 1.0, `review` 0.55, `decline` 0).
 3. Adjust for repayment streak (3+ or 6+ on-time loans), lifetime rate, recent defaults.
-4. Adjust for alt data (verified income ↑, gambling / loan-stacking apps ↓).
+4. Adjust for phone data (verified SMS income ↑, gambling / collection SMS/calls ↓, loan-stacking apps ↓).
 5. Cap at `max_income_multiple × monthly_income` (default 40% of income).
 6. Clamp to channel min/max; round to nearest KES 500.
 7. Compare to prior limit → `increase`, `decrease`, or `maintain`.
@@ -361,13 +402,15 @@ After scoring and policy checks, `LoanLimitEngine` assigns an **approved limit**
 
 | Channel | Min (KES) | Max (KES) | First-time base (KES) |
 |---------|-----------|-----------|------------------------|
+| `unbanked` | 500 | 50,000 | 3,000 |
 | `mpesa` | 1,000 | 75,000 | 5,000 |
 | `mobile_lender` | 500 | 100,000 | 3,000 |
 | `sacco` | 5,000 | 500,000 | 25,000 |
 | `bank` | 10,000 | 2,000,000 | 50,000 |
 
-**Example:** MPESA-001 with income KES 85,000 and prior limit KES 40,000 may receive KES 34,000 with `DECREASE` because the **income cap** (40% × 85,000 = 34,000) binds before the prior limit — this is intentional conservative lending.
+**Example:** `UNBANKED-001` with income KES 28,000, strong phone/M-Pesa profile, and prior limit KES 8,000 may receive KES 11,000 with `INCREASE`.
 
+## Project structure
 
 ```
 credit_scoring/
@@ -458,7 +501,7 @@ python3 train.py
 
 **What it does:**
 
-1. Generates 8,000 synthetic applicants (30% M-Pesa, 25% mobile lender, 25% SACCO, 20% bank).
+1. Generates 8,000 synthetic applicants (35% unbanked, 20% M-Pesa, 20% mobile lender, 15% SACCO, 10% bank).
 2. Splits 80/20 train/test with stratification on default label.
 3. Trains `GradientBoostingClassifier` wrapped in `CalibratedClassifierCV`.
 4. Evaluates on hold-out test set.
@@ -468,13 +511,13 @@ python3 train.py
 
 | Metric | Value |
 |--------|-------|
-| ROC-AUC | 0.910 |
-| Gini | 0.821 |
-| KS | 0.811 |
-| Brier score | 0.058 |
+| ROC-AUC | 0.905 |
+| Gini | 0.809 |
+| KS | 0.803 |
+| Brier score | 0.060 |
 | Test accuracy | 0.903 |
-| Precision | 0.573 |
-| Recall | 0.734 |
+| Precision | 0.579 |
+| Recall | 0.688 |
 | Default rate | 12% |
 | Feature count | 89 |
 | Model version | 2.3.0 |
@@ -495,7 +538,7 @@ python3 train.py
 
 ## 2. CLI scoring (`score.py`)
 
-Scores six sample applicants across all channels — including **mobile digital lender** cases — plus high-risk M-Pesa and mobile lender scenarios. Each score includes SHAP explainability and a persisted audit trail.
+Scores **seven** sample applicants — unbanked-first plus M-Pesa, SACCO, bank, mobile lender, and two high-risk cases. Each score includes SHAP explainability, loan limits, and a persisted audit trail.
 
 ```bash
 python3 score.py
@@ -504,12 +547,13 @@ python3 score.py
 **Sample output:**
 
 ```
-MPESA-001      | channel=mpesa         | score=687 | limit=KES 34,000 | DECREASE  | decision=APPROVE
-SACCO-014      | channel=sacco         | score=687 | limit=KES 48,000 | DECREASE  | decision=APPROVE
-BANK-203       | channel=bank          | score=687 | limit=KES 84,000 | DECREASE  | decision=APPROVE
-MOBLEND-001    | channel=mobile_lender | score=687 | limit=KES 19,000 | MAINTAIN  | decision=APPROVE
-MOBLEND-RISK-99 | channel=mobile_lender | score=561 | limit=KES 0      | SUSPENDED | decision=DECLINE
-MPESA-RISK-77  | channel=mpesa         | score=548 | limit=KES 0      | SUSPENDED | decision=DECLINE
+UNBANKED-001   | channel=unbanked      | score=683 | limit=KES 11,000 | INCREASE  | decision=APPROVE
+MPESA-001      | channel=mpesa         | score=683 | limit=KES 34,000 | DECREASE  | decision=APPROVE
+SACCO-014      | channel=sacco         | score=683 | limit=KES 48,000 | DECREASE  | decision=APPROVE
+BANK-203       | channel=bank          | score=634 | limit=KES 5,000  | DECREASE  | decision=REVIEW
+MOBLEND-001    | channel=mobile_lender | score=683 | limit=KES 19,000 | MAINTAIN  | decision=APPROVE
+MOBLEND-RISK-99 | channel=mobile_lender | score=550 | limit=KES 0      | SUSPENDED | decision=DECLINE
+MPESA-RISK-77  | channel=mpesa         | score=556 | limit=KES 0      | SUSPENDED | decision=DECLINE
 ```
 
 Re-run `python3 train.py` then `python3 score.py` after config or feature changes to refresh scores.
@@ -518,10 +562,11 @@ Re-run `python3 train.py` then `python3 score.py` after config or feature change
 
 | ID | Channel | Scenario |
 |----|---------|----------|
+| `UNBANKED-001` | `unbanked` | No bank account; M-Pesa + phone only → APPROVE |
 | `MPESA-001` | `mpesa` | Strong M-Pesa wallet profile → APPROVE |
 | `SACCO-014` | `sacco` | Long-tenure SACCO member → APPROVE |
-| `BANK-203` | `bank` | Solid bank relationship + strong history → APPROVE |
-| `MOBLEND-001` | `mobile_lender` | Repeat digital-lender borrower → APPROVE |
+| `BANK-203` | `bank` | Solid bank relationship → REVIEW |
+| `MOBLEND-001` | `mobile_lender` | Repeat borrower; M-Pesa statement signals → APPROVE |
 | `MOBLEND-RISK-99` | `mobile_lender` | Loan stacking + CRB default → DECLINE |
 | `MPESA-RISK-77` | `mpesa` | High Fuliza use + CRB default → DECLINE |
 
@@ -565,7 +610,7 @@ curl http://127.0.0.1:8000/health
 {
   "status": "ok",
   "model_loaded": true,
-  "model_version": "2.1.0"
+  "model_version": "2.3.0"
 }
 ```
 
@@ -579,11 +624,18 @@ Returns project name, model file, feature count, scorecard settings, and decisio
 
 ### `POST /score`
 
-Score a single applicant. Every request should include **`lending_history`** (borrowing/repayment ledger) and optionally **`alternative_data`** (phone signals with consent). Set `include_shap: true` and `persist_audit_trail: true` for full regulatory output.
+Score a single applicant. Include **`data_sources`**, **`lending_history`**, and **`phone_data`** (recommended for unbanked). Optional **`bank_features`** / **`sacco_features`** when flags are set. Set `include_shap: true` and `persist_audit_trail: true` for full regulatory output.
 
 **Shared blocks** (all channels):
 
 ```json
+"data_sources": {
+  "has_mpesa_wallet": 1.0,
+  "has_phone_consent": 1.0,
+  "has_bank_account": 0.0,
+  "has_sacco_membership": 0.0,
+  "has_crb_record": 0.0
+},
 "lending_history": {
   "lifetime_loans_count": 10,
   "lifetime_loans_repaid_on_time": 10,
@@ -597,19 +649,96 @@ Score a single applicant. Every request should include **`lending_history`** (bo
   "highest_prior_limit_kes": 40000,
   "months_customer_relationship": 24
 },
-"alternative_data": {
+"phone_data": {
   "alternative_data_consent": 1.0,
-  "sms_salary_detected": 1.0,
-  "sms_inferred_monthly_income_kes": 83300,
-  "sms_mpesa_txn_count_30d": 72,
-  "sms_bill_pay_regularity": 0.91,
-  "sms_other_lender_repayment_count": 1,
-  "sms_gambling_ratio": 0.04,
-  "apps_lending_app_count": 1,
-  "apps_gambling_app_count": 0,
-  "income_declared_vs_sms_ratio": 0.98,
-  "device_tenure_days": 540
+  "sms": {
+    "sms_salary_detected": 1.0,
+    "sms_inferred_monthly_income_kes": 83300,
+    "sms_mpesa_txn_count_30d": 72,
+    "sms_total_count_30d": 118,
+    "sms_bill_pay_regularity": 0.91,
+    "sms_other_lender_repayment_count": 1,
+    "sms_collection_message_count_30d": 0,
+    "sms_lender_promo_count_30d": 1,
+    "sms_gambling_ratio": 0.04,
+    "income_declared_vs_sms_ratio": 0.98
+  },
+  "calls": {
+    "call_total_count_30d": 64,
+    "call_unique_contacts_30d": 28,
+    "call_avg_duration_seconds": 145,
+    "call_incoming_ratio": 0.62,
+    "call_missed_ratio": 0.11,
+    "call_collection_agency_count_30d": 0,
+    "call_night_activity_ratio": 0.06
+  },
+  "device": {
+    "device_tenure_days": 540,
+    "contacts_count": 210,
+    "contacts_saved_ratio": 0.88,
+    "apps_lending_app_count": 1,
+    "apps_gambling_app_count": 0,
+    "device_os_android": 1.0,
+    "device_os_version_score": 0.87,
+    "device_tier": 2,
+    "device_ram_gb": 4,
+    "device_storage_free_ratio": 0.42,
+    "device_dual_sim": 1.0,
+    "device_network_4g_plus": 1.0,
+    "device_model_age_months": 18
+  }
 }
+```
+
+> The flat `alternative_data` block still works as a deprecated alias for `phone_data`.
+
+**Unbanked example** (primary path):
+
+```bash
+curl -X POST http://127.0.0.1:8000/score \
+  -H "Content-Type: application/json" \
+  -d '{
+    "applicant_id": "UNBANKED-001",
+    "channel": "unbanked",
+    "age": 29,
+    "monthly_income_kes": 28000,
+    "requested_amount_kes": 12000,
+    "existing_debt_kes": 2000,
+    "crb_defaults": 0,
+    "crb_inquiries_6m": 0,
+    "include_shap": true,
+    "persist_audit_trail": true,
+    "data_sources": {
+      "has_mpesa_wallet": 1.0,
+      "has_phone_consent": 1.0,
+      "has_bank_account": 0.0,
+      "has_sacco_membership": 0.0,
+      "has_crb_record": 0.0
+    },
+    "lending_history": {
+      "lifetime_loans_count": 4,
+      "lifetime_repayment_rate": 1.0,
+      "on_time_repayment_streak": 4,
+      "highest_prior_limit_kes": 8000
+    },
+    "phone_data": {
+      "alternative_data_consent": 1.0,
+      "sms": { "sms_salary_detected": 1.0, "sms_gambling_ratio": 0.04 },
+      "calls": { "call_collection_agency_count_30d": 0 },
+      "device": { "device_tier": 2, "device_ram_gb": 4, "device_network_4g_plus": 1.0 }
+    },
+    "mpesa_features": {
+      "kyc_tier": 2,
+      "wallet_activity_days_90d": 72,
+      "avg_monthly_txn_count": 58,
+      "avg_txn_amount_kes": 1800,
+      "cash_in_out_ratio": 1.05,
+      "merchant_spend_ratio": 0.28,
+      "fuliza_utilization": 0.12,
+      "wallet_balance_volatility": 0.22,
+      "days_since_last_txn": 1
+    }
+  }'
 ```
 
 **M-Pesa example:**
@@ -628,6 +757,13 @@ curl -X POST http://127.0.0.1:8000/score \
     "crb_inquiries_6m": 0,
     "include_shap": true,
     "persist_audit_trail": true,
+    "data_sources": {
+      "has_mpesa_wallet": 1.0,
+      "has_phone_consent": 1.0,
+      "has_bank_account": 0.0,
+      "has_sacco_membership": 0.0,
+      "has_crb_record": 0.0
+    },
     "lending_history": {
       "lifetime_loans_count": 10,
       "lifetime_repayment_rate": 1.0,
@@ -636,13 +772,15 @@ curl -X POST http://127.0.0.1:8000/score \
       "lifetime_default_count": 0,
       "days_since_last_default": 9999
     },
-    "alternative_data": {
+    "phone_data": {
       "alternative_data_consent": 1.0,
-      "sms_salary_detected": 1.0,
-      "sms_inferred_monthly_income_kes": 83300,
-      "income_declared_vs_sms_ratio": 0.98,
-      "sms_gambling_ratio": 0.04,
-      "apps_lending_app_count": 1
+      "sms": {
+        "sms_salary_detected": 1.0,
+        "sms_inferred_monthly_income_kes": 83300,
+        "income_declared_vs_sms_ratio": 0.98,
+        "sms_gambling_ratio": 0.04
+      },
+      "device": { "apps_lending_app_count": 1 }
     },
     "mpesa_features": {
       "kyc_tier": 3,
@@ -704,18 +842,27 @@ curl -X POST http://127.0.0.1:8000/score \
     "crb_inquiries_6m": 1,
     "include_shap": true,
     "persist_audit_trail": true,
+    "data_sources": {
+      "has_mpesa_wallet": 1.0,
+      "has_phone_consent": 1.0,
+      "has_bank_account": 0.0,
+      "has_sacco_membership": 0.0,
+      "has_crb_record": 0.0
+    },
     "lending_history": {
       "lifetime_loans_count": 8,
       "lifetime_repayment_rate": 0.96,
       "on_time_repayment_streak": 5,
       "highest_prior_limit_kes": 20000
     },
-    "alternative_data": {
+    "phone_data": {
       "alternative_data_consent": 1.0,
-      "sms_salary_detected": 1.0,
-      "sms_inferred_monthly_income_kes": 47000,
-      "income_declared_vs_sms_ratio": 0.98,
-      "apps_lending_app_count": 1
+      "sms": {
+        "sms_salary_detected": 1.0,
+        "sms_inferred_monthly_income_kes": 47000,
+        "income_declared_vs_sms_ratio": 0.98
+      },
+      "device": { "apps_lending_app_count": 1 }
     },
     "mobile_lender_features": {
       "mpesa_statement_days_covered": 270,
@@ -786,7 +933,7 @@ curl -X POST http://127.0.0.1:8000/score \
     ]
   },
   "audit_id": "MOBLEND-001-4fddb337",
-  "model_version": "2.1.0"
+  "model_version": "2.3.0"
 }
 ```
 
@@ -843,12 +990,12 @@ flowchart TD
 
 Policy failures always result in **DECLINE**, regardless of credit score. Examples:
 
-- Active **CRB default** (all channels)
+- Active **CRB default** when `has_crb_record: 1`
 - **Debt-to-income** above 45% (all channels)
-- M-Pesa **KYC tier** too low or **Fuliza** over-utilised
-- SACCO **membership** or **share capital** below minimum
-- Bank **bounced cheques** or low average balance
-- Mobile lender **loan stacking** (too many active digital loans) or **excessive rollovers**
+- Unbanked / M-Pesa **KYC tier** too low or **Fuliza** over-utilised
+- SACCO **membership** or **share capital** below minimum (when `has_sacco_membership: 1`)
+- Bank **bounced cheques** or low average balance (when `has_bank_account: 1`)
+- Mobile lender **loan stacking** or **late repayments** on M-Pesa statement
 
 ### Scorecard formula
 
@@ -887,7 +1034,7 @@ Every score can include a **SHAP (SHapley Additive exPlanations)** breakdown sho
 2. The explainer is chosen from the trained base model:
    - `TreeExplainer` for gradient boosting
    - `LinearExplainer` for logistic regression
-3. Only **common + lending history + alternative data (if consented) + channel-specific** features for the applicant's channel are included (no cross-channel leakage).
+3. Only **common + lending history + data sources + phone data (if consented) + channel-specific** features for the applicant's channel are included (no cross-channel leakage).
 4. Top contributions are ranked by absolute impact.
 5. A plain-language `summary` is generated for non-technical reviewers.
 
@@ -908,7 +1055,8 @@ When `persist_audit_trail: true`, a JSON file is written to `assets/audit_trails
 | `scored_at` | UTC timestamp of the decision |
 | `model_version` | Model version that produced the score |
 | `applicant_id` | Applicant identifier |
-| `channel` | Lending channel (`mpesa`, `sacco`, `bank`, `mobile_lender`) |
+| `channel` | Lending channel (`unbanked`, `mpesa`, `sacco`, `bank`, `mobile_lender`) |
+| `loan_limit` | Approved limit, tier, adjustment, and reasons |
 | `probability_of_default` | Final **calibrated** PD used for scorecard |
 | `credit_score` | Final scorecard score |
 | `decision` | Final decision (`approve` / `review` / `decline`) |
@@ -930,17 +1078,29 @@ data:
   n_samples: 8000
   default_rate: 0.12
   channel_distribution:
-    mpesa: 0.30
-    mobile_lender: 0.25
-    sacco: 0.25
-    bank: 0.20
+    unbanked: 0.35
+    mpesa: 0.20
+    mobile_lender: 0.20
+    sacco: 0.15
+    bank: 0.10
 
 channel_minimums:
+  unbanked:
+    min_kyc_tier: 1
+    max_fuliza_utilization: 0.90
+    min_wallet_activity_days_90d: 20
   mobile_lender:
-    min_platform_tenure_months: 1
-    min_platform_repayment_rate: 0.80
-    max_active_digital_loans: 2
-    max_rollover_count_12m: 3
+    min_mpesa_statement_days_covered: 60
+    min_mpesa_inferred_repayment_rate: 0.80
+    max_mpesa_active_lender_count: 2
+    max_mpesa_late_repayment_events_12m: 3
+
+loan_limits:
+  channels:
+    unbanked:
+      min_limit_kes: 500
+      max_limit_kes: 50000
+      first_time_base_kes: 3000
 ```
 
 ```yaml
@@ -948,13 +1108,14 @@ channel_minimums:
 scorecard:          # PDO scorecard settings
 decision_bands:     # approve / review thresholds
 policy:             # Global rules (age, DTI, CRB, income)
-channel_minimums:   # Per-channel rules (all four channels)
+channel_minimums:   # Per-channel rules (all five channels)
 training:           # Model type, calibration, test split
 ```
 
 | Section | What to tune |
 |---------|--------------|
-| `data.channel_distribution` | Mix: 30% M-Pesa, 25% mobile lender, 25% SACCO, 20% bank |
+| `data.channel_distribution` | Mix: 35% unbanked, 20% M-Pesa, 20% mobile lender, 15% SACCO, 10% bank |
+| `channel_minimums.unbanked` | Relaxed M-Pesa rules for thin-file applicants |
 | `scorecard` | Base score, PDO, min/max score bounds |
 | `decision_bands` | Approve (≥ 680) and review (≥ 550) thresholds |
 | `policy` | Minimum age (18), max DTI (45%), CRB defaults (0), income floor (KES 15,000) |
@@ -973,27 +1134,28 @@ After changing config or adding channels, re-run `python3 train.py` to retrain (
 
 | Metric | Meaning | Latest value |
 |--------|---------|--------------|
-| **ROC-AUC** | Ranking quality of default vs non-default | 0.910 |
-| **Gini** | `2 × AUC − 1`; higher = better separation | 0.821 |
-| **KS** | Maximum separation between score distributions | 0.811 |
-| **Brier** | Calibration error of predicted probabilities | 0.058 |
-| **Precision** | Of predicted defaults, how many are actual defaults | 0.573 |
-| **Recall** | Of actual defaults, how many the model catches | 0.734 |
+| **ROC-AUC** | Ranking quality of default vs non-default | 0.905 |
+| **Gini** | `2 × AUC − 1`; higher = better separation | 0.809 |
+| **KS** | Maximum separation between score distributions | 0.803 |
+| **Brier** | Calibration error of predicted probabilities | 0.060 |
+| **Precision** | Of predicted defaults, how many are actual defaults | 0.579 |
+| **Recall** | Of actual defaults, how many the model catches | 0.688 |
 | **Features** | Total model input columns | 89 |
 
 ---
 
 ## Design decisions
 
-1. **Separation of ML and policy** — the model estimates risk; hard rules enforce compliance independently. A high score cannot override an active CRB default.
-2. **Channel masking** — one unified model serves M-Pesa, SACCO, bank, and mobile digital lenders by zeroing irrelevant channel features per row.
-3. **Calibrated probabilities** — `CalibratedClassifierCV` (sigmoid) improves PD reliability before scorecard mapping.
-4. **Versioned artifacts** — each training run saves a timestamped model, metadata JSON, and feature importance CSV.
-5. **SHAP audit trails** — every API or CLI score can persist a JSON audit file with feature-level explanations.
-6. **Loan limit engine** — separate from the ML score; limits increase or decrease from repayment streaks, defaults, income caps, and phone-derived signals.
-7. **FastAPI + Pydantic** — typed request validation per channel; invalid payloads are rejected before scoring.
-8. **Statement-first design** — competitor fintech APIs are not assumed; cross-lender signals come from customer M-Pesa/bank/SACCO statements.
-9. **Synthetic data only** — no real customer PII. Replace `src/data/synthetic.py` with your ETL/CRB pipeline in production.
+1. **Unbanked-first** — primary scoring path uses M-Pesa + phone; bank/SACCO/CRB enrich when available via `data_sources` flags.
+2. **Separation of ML and policy** — the model estimates risk; hard rules enforce compliance independently. CRB defaults apply only when `has_crb_record: 1`.
+3. **Channel masking** — one unified model serves unbanked, M-Pesa, SACCO, bank, and mobile lenders; optional bank/SACCO features activate per flag.
+4. **Calibrated probabilities** — `CalibratedClassifierCV` (sigmoid) improves PD reliability before scorecard mapping.
+5. **Versioned artifacts** — each training run saves a timestamped model, metadata JSON, and feature importance CSV.
+6. **SHAP audit trails** — every API or CLI score can persist a JSON audit file with feature-level explanations.
+7. **Loan limit engine** — separate from the ML score; limits increase or decrease from repayment streaks, phone/SMS/call signals, and income caps.
+8. **FastAPI + Pydantic** — typed request validation; nested `phone_data` (SMS / calls / device tech) and `data_sources` blocks.
+9. **Statement-first design** — no third-party lender APIs; cross-lender signals from M-Pesa statements and phone SMS/calls.
+10. **Synthetic data only** — no real customer PII. Replace `src/data/synthetic.py` with your ETL pipeline in production.
 
 ---
 
@@ -1001,15 +1163,18 @@ After changing config or adding channels, re-run `python3 train.py` to retrain (
 
 ### Built ✅
 
-- Multi-channel feature engineering (M-Pesa, SACCO, bank, **mobile digital lenders**)
-- **Phone data** (SMS, call log, contacts, apps) — 76 total features
+- **Unbanked-first** scoring (`channel: unbanked`) with M-Pesa + phone as primary rails
+- **Optional bank / SACCO / CRB** enrichment via `data_sources` flags (89 features)
+- **Phone data** — SMS, call log, contacts, apps, **device tech** (OS, RAM, tier, network)
+- **M-Pesa statement parser** — cross-lender signals without third-party APIs
+- Multi-channel feature engineering (unbanked, M-Pesa, SACCO, bank, mobile lenders)
 - **Loan limit engine** with increase/decrease/maintain/suspend logic
 - Training pipeline with Gini, KS, Brier evaluation
 - Scorecard conversion (300–850, PDO)
-- Policy engine with channel-specific rules
+- Policy engine with channel-specific and flag-gated rules
 - SHAP explainability with audit trail persistence
 - FastAPI REST service with Swagger docs
-- CLI scoring with **six sample applicants** (all four channels + two high-risk cases)
+- CLI scoring with **seven sample applicants** (unbanked + all channels + high-risk cases)
 
 ### Next steps
 
