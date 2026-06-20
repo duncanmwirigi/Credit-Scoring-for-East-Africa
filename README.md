@@ -25,6 +25,192 @@ It combines channel-specific feature engineering, a calibrated ML model, scoreca
 | OpenAPI / Swagger docs | ✅ | `/docs` |
 | Synthetic training data (no PII) | ✅ | `src/data/synthetic.py` |
 
+## Table of contents
+
+- [Install](#install)
+- [Verify it works](#verify-it-works-copy-paste)
+- [How to use this package](#how-to-use-this-package)
+- [Supported channels](#supported-channels)
+- [Data sources](#data-sources--statements-not-third-party-apis)
+- [Architecture](#architecture)
+- [End-to-end workflow](#end-to-end-workflow)
+- [Project structure](#project-structure)
+- [Training (`train.py`)](#1-training-trainpy)
+- [CLI scoring (`score.py`)](#2-cli-scoring-scorepy)
+- [REST API (`serve.py`)](#3-rest-api-servepy)
+- [Programmatic API (Python)](#programmatic-api-python)
+- [Statement & phone parsers](#statement--phone-parsers)
+- [Decision logic](#decision-logic)
+- [SHAP explainability & audit trails](#shap-explainability--audit-trails)
+- [Configuration](#configuration)
+- [Key metrics](#key-metrics)
+- [Troubleshooting](#troubleshooting)
+- [Documentation map](#documentation-map)
+- [Design decisions](#design-decisions)
+- [Roadmap](#roadmap)
+
+## Install
+
+```bash
+cd credit_scoring
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+Requires **Python 3.10+**. Dependencies: scikit-learn, pandas, numpy, matplotlib, pyyaml, joblib, fastapi, uvicorn, shap, pydantic.
+
+> Install `scikit-learn`, not the deprecated PyPI package `sklearn`.
+
+## Verify it works (copy-paste)
+
+**Step 1 — train a model** (generates `models/` + `assets/`):
+
+```bash
+cd credit_scoring
+source .venv/bin/activate
+python3 train.py
+# Expect: ROC-AUC ~0.90, model saved to models/
+```
+
+**Step 2 — score sample applicants** (SHAP + audit trails):
+
+```bash
+python3 score.py
+# Expect: 7 applicants scored; assets/sample_decisions.json written
+```
+
+**Step 3 — start the REST API** (loads latest model from `models/latest_model.txt`):
+
+```bash
+python3 serve.py
+# → http://127.0.0.1:8000/docs
+```
+
+**Step 4 — health check + unbanked score** (second terminal):
+
+```bash
+curl -s http://127.0.0.1:8000/health | python3 -m json.tool
+
+curl -s -X POST http://127.0.0.1:8000/score \
+  -H "Content-Type: application/json" \
+  -d '{
+    "applicant_id": "UNBANKED-001",
+    "channel": "unbanked",
+    "age": 29,
+    "monthly_income_kes": 28000,
+    "requested_amount_kes": 12000,
+    "existing_debt_kes": 2000,
+    "crb_defaults": 0,
+    "crb_inquiries_6m": 0,
+    "include_shap": true,
+    "persist_audit_trail": true,
+    "data_sources": {
+      "has_mpesa_wallet": 1.0,
+      "has_phone_consent": 1.0,
+      "has_bank_account": 0.0,
+      "has_sacco_membership": 0.0,
+      "has_crb_record": 0.0
+    },
+    "lending_history": {
+      "lifetime_loans_count": 4,
+      "lifetime_repayment_rate": 1.0,
+      "on_time_repayment_streak": 4,
+      "highest_prior_limit_kes": 8000
+    },
+    "phone_data": {
+      "alternative_data_consent": 1.0,
+      "sms": { "sms_salary_detected": 1.0, "sms_gambling_ratio": 0.04 },
+      "calls": { "call_collection_agency_count_30d": 0 },
+      "device": { "device_tier": 2, "device_ram_gb": 4 }
+    },
+    "mpesa_features": {
+      "kyc_tier": 2,
+      "wallet_activity_days_90d": 72,
+      "avg_monthly_txn_count": 58,
+      "avg_txn_amount_kes": 1800,
+      "cash_in_out_ratio": 1.05,
+      "merchant_spend_ratio": 0.28,
+      "fuliza_utilization": 0.12,
+      "wallet_balance_volatility": 0.22,
+      "days_since_last_txn": 1
+    }
+  }' | python3 -m json.tool
+```
+
+Or use Make:
+
+```bash
+make train           # python3 train.py
+make score           # python3 score.py
+make serve           # python3 serve.py
+make verify          # train + score (no live API)
+```
+
+## How to use this package
+
+East Africa Credit Scoring is a **Python library + REST service**, not a hosted SaaS. You train a model on your data (or synthetic data for demos), then score applicants via CLI, HTTP, or direct Python imports.
+
+### Choose an integration path
+
+| Path | When to use | Entry point |
+|------|-------------|-------------|
+| **REST API** | Production lending app, mobile backend | `serve.py` → `POST /score` |
+| **CLI batch** | Demos, regression checks, audit samples | `score.py` |
+| **Programmatic Python** | Custom pipelines, notebooks, ETL | `CreditScorer.from_latest()` |
+| **Train / retrain** | New data, config changes, new channels | `train.py` |
+
+### Step 1 — Install and train
+
+```bash
+pip install -r requirements.txt
+python3 train.py
+```
+
+Training writes versioned artifacts to `models/` and evaluation reports to `assets/`. The API and scorer load the model named in `models/latest_model.txt`.
+
+### Step 2 — Build an applicant payload
+
+Every score needs:
+
+| Block | Required? | Purpose |
+|-------|-----------|---------|
+| Core fields | Yes | `applicant_id`, `channel`, `age`, `monthly_income_kes`, `requested_amount_kes`, `existing_debt_kes`, `crb_*` |
+| `data_sources` | Yes | Flags for M-Pesa, phone consent, bank, SACCO, CRB availability |
+| `lending_history` | Recommended | Your institution's loan ledger (repeat customers) |
+| `phone_data` | Strongly recommended | SMS, calls, device tech (unbanked path) |
+| Channel features | Per channel | `mpesa_features`, `sacco_features`, `bank_features`, or `mobile_lender_features` |
+
+Set `channel` to one of: `unbanked`, `mpesa`, `sacco`, `bank`, `mobile_lender`.
+
+Bank and SACCO features are **scored only when** `has_bank_account` / `has_sacco_membership` is `1.0` — unbanked applicants are not penalised for missing bank data.
+
+### Step 3 — Score
+
+**HTTP** — start `serve.py`, then `POST /score` or `POST /score/batch` (see [REST API](#3-rest-api-servepy)).
+
+**CLI** — edit `sample_applicants()` in `score.py` or call `CreditScorer` from your own script.
+
+**Python** — see [Programmatic API](#programmatic-api-python).
+
+### Step 4 — Interpret the response
+
+| Field | Meaning |
+|-------|---------|
+| `credit_score` | 300–850 scorecard score (PDO methodology) |
+| `probability_of_default` | Calibrated PD (0–1) |
+| `decision` | `approve` (≥680), `review` (550–679), or `decline` (<550 or policy fail) |
+| `policy.reasons` | Hard-rule decline reasons (independent of ML) |
+| `loan_limit` | Assigned limit, tier, and adjustment (`increase` / `decrease` / `maintain`) |
+| `shap` | Feature-level risk contributions (when `include_shap: true`) |
+| `audit_id` | Regulatory audit file in `assets/audit_trails/` (when persisted) |
+
+### Step 5 — Tune and retrain
+
+Edit thresholds in [`config/scoring.yaml`](config/scoring.yaml) — scorecard bands, policy rules, channel minimums, loan limits. Then re-run `python3 train.py` if feature definitions change.
+
+**Currency:** all amounts are **KES** (Kenyan Shillings). Income, debt, limits, and balances use whole shillings unless noted.
+
 ## Supported channels
 
 | Channel | `channel` value | API feature block | Examples |
@@ -452,41 +638,27 @@ credit_scoring/
 │   ├── sample_decisions.json
 │   └── audit_trails/             # Regulatory audit JSON per score
 ├── requirements.txt
+├── Makefile                      # make train | score | serve | verify
 ├── .gitignore
 └── README.md
 ```
 
 ## Requirements
 
+See [Install](#install). Quick recap:
+
 - Python 3.10+
-- scikit-learn, pandas, numpy, matplotlib, pyyaml, joblib
-- fastapi, uvicorn, shap, pydantic
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-`requirements.txt` includes: `scikit-learn`, `numpy`, `pandas`, `matplotlib`, `pyyaml`, `joblib`, `fastapi`, `uvicorn`, `shap`, `pydantic`.
-
-> **Note:** Install `scikit-learn`, not the deprecated PyPI package `sklearn`.
+- `pip install -r requirements.txt`
 
 ## Quick start
 
+See [Verify it works](#verify-it-works-copy-paste) for the full copy-paste flow. Minimum:
+
 ```bash
-# 1. Install dependencies
 pip install -r requirements.txt
-
-# 2. Train the model (required before scoring or API)
-python3 train.py
-
-# 3. Score sample applicants with SHAP + audit trails
-python3 score.py
-
-# 4. Start the REST API
-python3 serve.py
-# → http://127.0.0.1:8000/docs
+python3 train.py      # required before scoring or API
+python3 score.py      # CLI demo with SHAP + audits
+python3 serve.py      # REST API on :8000
 ```
 
 ---
@@ -965,6 +1137,139 @@ curl -X POST http://127.0.0.1:8000/score/batch \
 
 ---
 
+## Programmatic API (Python)
+
+Embed scoring in your own Python code without the REST server:
+
+```python
+from src.config import load_config
+from src.domain import ApplicantProfile, Channel
+from src.ml.scorer import CreditScorer
+
+config = load_config()
+scorer = CreditScorer.from_latest(config)
+
+applicant = ApplicantProfile(
+    applicant_id="UNBANKED-001",
+    channel=Channel.UNBANKED,
+    age=29,
+    monthly_income_kes=28_000,
+    requested_amount_kes=12_000,
+    existing_debt_kes=2_000,
+    crb_defaults=0,
+    crb_inquiries_6m=0,
+    features={
+        # data_sources flags
+        "has_mpesa_wallet": 1.0,
+        "has_phone_consent": 1.0,
+        "has_bank_account": 0.0,
+        "has_sacco_membership": 0.0,
+        "has_crb_record": 0.0,
+        # lending_history
+        "lifetime_loans_count": 4,
+        "lifetime_repayment_rate": 1.0,
+        "highest_prior_limit_kes": 8_000,
+        # phone_data (flat keys in features dict for CLI/programmatic use)
+        "alternative_data_consent": 1.0,
+        "sms_salary_detected": 1.0,
+        "sms_gambling_ratio": 0.04,
+        "call_collection_agency_count_30d": 0,
+        "device_tier": 2,
+        # mpesa_features
+        "kyc_tier": 2,
+        "wallet_activity_days_90d": 72,
+        "fuliza_utilization": 0.12,
+    },
+)
+
+# Score without SHAP or audit (fast path)
+decision = scorer.score_applicant(applicant)
+print(decision.credit_score, decision.decision.value, decision.loan_limit.approved_limit_kes)
+
+# Full score with SHAP + persisted audit trail
+decision, shap, audit_id = scorer.score_with_audit(
+    applicant,
+    include_shap=True,
+    persist_audit_trail=True,
+    request_snapshot={"source": "my_app"},
+)
+```
+
+Run from the project root (`credit_scoring/`) so `src` imports resolve. For a custom config path: `load_config("/path/to/scoring.yaml")`.
+
+Batch scoring:
+
+```python
+decisions = scorer.score_batch([applicant1, applicant2])
+```
+
+---
+
+## Statement & phone parsers
+
+Convert raw customer uploads into model features before calling `/score` or `CreditScorer`.
+
+### M-Pesa statement → mobile lender features
+
+```python
+from datetime import datetime
+from src.data.statements import MpesaStatementLine, derive_mpesa_statement_features
+
+lines = [
+    MpesaStatementLine(
+        date=datetime(2026, 1, 15),
+        amount_kes=5000,
+        direction="in",
+        counterparty="Digital Lender XYZ",
+        description="Loan disbursed",
+    ),
+    # ... more statement rows
+]
+features = derive_mpesa_statement_features(lines)
+# → mpesa_lender_disbursement_count_12m, mpesa_inferred_repayment_rate, etc.
+```
+
+Pass the returned dict as `mobile_lender_features` in the API payload (with `"channel": "mobile_lender"`).
+
+### Phone SMS / calls → phone features
+
+```python
+from datetime import datetime
+from src.data.phone_data import (
+    PhoneSmsMessage,
+    PhoneCallRecord,
+    derive_sms_features,
+    derive_call_features,
+    derive_device_features,
+)
+
+sms_feats = derive_sms_features([
+    PhoneSmsMessage(datetime(2026, 6, 1, 9, 0), "MPESA", "You have received KES 28000 salary"),
+])
+call_feats = derive_call_features([
+    PhoneCallRecord(datetime(2026, 6, 2, 14, 0), "incoming", 120.0),
+])
+device_feats = derive_device_features(
+    device_tenure_days=540,
+    contacts_count=210,
+    saved_contacts_count=185,
+    apps_lending_app_count=1,
+    apps_gambling_app_count=0,
+    os_name="android",
+    os_version="13",
+    device_tier=2,
+    ram_gb=4,
+    storage_free_ratio=0.42,
+    dual_sim=True,
+    network_4g_plus=True,
+    model_age_months=18,
+)
+```
+
+Merge into the API `phone_data` block (`sms`, `calls`, `device` sub-objects) or flat `features` dict for programmatic scoring.
+
+---
+
 ## Decision logic
 
 Final decisions combine **three independent layers**:
@@ -1127,6 +1432,45 @@ training:           # Model type, calibration, test split
 | `training.model_type` | `gradient_boosting` or `logistic_regression` |
 
 After changing config or adding channels, re-run `python3 train.py` to retrain (feature count must match saved model).
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| `503 Model not loaded` on API | No trained model | Run `python3 train.py` first; check `models/latest_model.txt` exists |
+| `FileNotFoundError: No trained model` | Missing `models/` artifacts | Run `train.py`; commit or copy model files if deploying |
+| Scores change after config edit | Scorecard/policy changed but same model | Expected for policy/bands; retrain if feature engineering changed |
+| `DECLINE` despite high income | Policy hard rules failed | Check `policy.reasons` — CRB, DTI, channel minimums |
+| Unbanked declined for missing bank data | Wrong `data_sources` flags | Set `has_bank_account: 0.0`; use `channel: unbanked` |
+| Phone features all zero | No consent | Set `alternative_data_consent: 1.0` and `has_phone_consent: 1.0` |
+| SHAP missing in response | Not requested | Set `include_shap: true` in `/score` body |
+| No audit file written | Persistence disabled | Set `persist_audit_trail: true` (requires SHAP) |
+| Port 8000 in use | Another process bound | `lsof -i :8000` and stop, or change port in `serve.py` |
+| `ModuleNotFoundError: src` | Wrong working directory | Run scripts from `credit_scoring/` project root |
+| Import error for `sklearn` | Wrong package installed | `pip uninstall sklearn`; `pip install scikit-learn` |
+| Batch score slow | SHAP on by default per-item | Use `include_shap: false` for `/score/batch` |
+
+---
+
+## Documentation map
+
+| Document / path | Purpose |
+|-----------------|---------|
+| [README.md](README.md) | Usage guide (this file) |
+| [config/scoring.yaml](config/scoring.yaml) | All thresholds, scorecard, channel rules, loan limits |
+| [score.py](score.py) | Sample applicants + CLI scoring reference |
+| [serve.py](serve.py) | FastAPI server entry point |
+| [src/api/schemas.py](src/api/schemas.py) | Pydantic request/response types (OpenAPI source) |
+| [src/api/app.py](src/api/app.py) | HTTP route handlers |
+| [src/data/statements.py](src/data/statements.py) | M-Pesa statement feature parser |
+| [src/data/phone_data.py](src/data/phone_data.py) | SMS / call / device feature parser |
+| [assets/sample_decisions.json](assets/sample_decisions.json) | Latest CLI scoring output |
+| [assets/audit_trails/](assets/audit_trails/) | Regulatory audit JSON per score |
+| [assets/training_metrics.json](assets/training_metrics.json) | Latest model evaluation report |
+
+Interactive API docs when the server is running: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
 ---
 
